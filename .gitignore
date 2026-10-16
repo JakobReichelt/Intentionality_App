@@ -1,0 +1,11 @@
+bin/
+obj/
+publish/
+*.user
+*.suo
+.vs/
+TestResults/
+*.DotSettings.user
+
+# Local session journal (can include location)
+logs/intentionality.md

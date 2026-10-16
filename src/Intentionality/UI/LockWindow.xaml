@@ -1,0 +1,32 @@
+<Window x:Class="Intentionality.UI.LockWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Intentionality"
+        WindowStyle="None"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False"
+        Topmost="True"
+        AllowsTransparency="True"
+        Background="Transparent"
+        WindowStartupLocation="Manual"
+        Focusable="True"
+        Icon="pack://application:,,,/assets/down-arrow.ico">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <Image x:Name="BackdropImage" Stretch="UniformToFill" Grid.RowSpan="2" />
+        <Border x:Name="ContentHost"
+                Grid.Row="1"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Top"
+                Margin="0,-88,0,0"
+                Width="680"
+                MaxWidth="680"
+                Background="Transparent"
+                Visibility="Collapsed">
+            <ContentControl x:Name="StepHost" />
+        </Border>
+    </Grid>
+</Window>
