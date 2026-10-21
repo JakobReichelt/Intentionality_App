@@ -18,5 +18,5 @@ static class GoalSizeStep
     static readonly int DefaultSelection = Array.IndexOf(Levels, AmbitionLevel.AboutRight);
 
     public static UIElement Create(string goal, Action<AmbitionLevel> onConfirm) =>
-        ChoiceStep.Create("Wie war: ", goal, Labels, DefaultSelection, Shortcuts, index => onConfirm(Levels[index]));
+        ChoiceStep.Create("War das Ziel: ", goal, Labels, DefaultSelection, Shortcuts, index => onConfirm(Levels[index]));
 }

@@ -14,9 +14,9 @@ static class IfThenStep
         var error = ErrorLine();
 
         panel.Children.Add(Theme.Title(title));
-        panel.Children.Add(Label("Wenn …"));
+        panel.Children.Add(Label("Wenn"));
         panel.Children.Add(new Border { Child = distraction, Margin = new Thickness(0, 4, 0, 0) });
-        panel.Children.Add(Label("… dann"));
+        panel.Children.Add(Label("Dann"));
         panel.Children.Add(new Border { Child = response, Margin = new Thickness(0, 4, 0, 0) });
         panel.Children.Add(error);
 
@@ -26,7 +26,7 @@ static class IfThenStep
             {
                 if (string.IsNullOrWhiteSpace(distraction.Text))
                 {
-                    error.Text = "Bitte die Ablenkung ausfüllen.";
+                    error.Text = "Bitte ausfüllen.";
                     error.Visibility = Visibility.Visible;
                     return;
                 }
@@ -39,7 +39,7 @@ static class IfThenStep
 
             if (string.IsNullOrWhiteSpace(distraction.Text) || string.IsNullOrWhiteSpace(response.Text))
             {
-                error.Text = "Bitte beide Felder ausfüllen.";
+                error.Text = "Bitte ausfüllen.";
                 error.Visibility = Visibility.Visible;
                 if (string.IsNullOrWhiteSpace(distraction.Text))
                 {

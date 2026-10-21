@@ -14,8 +14,7 @@ public enum PromptKind
 }
 
 /// <summary>
-/// Rotates German prompt phrasings so repeated sessions feel less autopilot.
-/// Never returns the same variant twice in a row for a given kind.
+/// Rotates simple German prompts. Never returns the same variant twice in a row for a kind.
 /// </summary>
 public sealed class PromptVariants
 {
@@ -23,66 +22,51 @@ public sealed class PromptVariants
     {
         [PromptKind.Work] =
         [
-            "Woran arbeitest du gerade?",
-            "Was steht als Nächstes an?",
-            "Womit beschäftigst du dich jetzt?",
-            "Worauf willst du dich jetzt konzentrieren?"
+            "Woran arbeitest du?",
+            "Was machst du jetzt?",
+            "Worum geht es?"
         ],
         [PromptKind.Goal] =
         [
-            "Was ist das Ziel dieser Sitzung?",
-            "Was willst du in dieser Sitzung schaffen?",
-            "Womit wäre diese Sitzung erfolgreich?",
-            "Was soll am Ende dieser Sitzung stehen?"
+            "Was ist dein Ziel?",
+            "Was willst du schaffen?",
+            "Was soll fertig werden?"
         ],
         [PromptKind.DoneCriterion] =
         [
-            "Woran erkennst du, dass du fertig bist?",
-            "Wann gilt dieses Ziel als erreicht?",
-            "Was muss sichtbar sein, damit du stoppst?",
-            "Welches Ergebnis zählt als fertig?"
+            "Wann bist du fertig?",
+            "Woran merkst du, dass es fertig ist?",
+            "Was ist dann erledigt?"
         ],
         [PromptKind.Duration] =
         [
             "Wie viel Zeit brauchst du?",
-            "Wie lange willst du dranbleiben?",
-            "Wie viel Zeit nimmst du dir dafür?",
-            "Bis wann willst du freigeschaltet bleiben?"
+            "Wie lange brauchst du?"
         ],
         [PromptKind.IfThen] =
         [
-            "Was zieht dich am ehesten ab — und was tust du dann?",
-            "Welche Ablenkung droht — und wie reagierst du?",
-            "Was könnte dich unterbrechen — und dein Plan dagegen?",
-            "Wenn dich etwas ablenkt: was und was tust du dann?"
+            "Was lenkt dich ab — und was tust du dann?",
+            "Welche Ablenkung — und dein Plan dagegen?"
         ],
         [PromptKind.ResumeNote] =
         [
-            "Was ist der allererste nächste Schritt?",
-            "Womit würdest du beim nächsten Mal starten?",
-            "Welcher konkrete Schritt folgt als Nächstes?",
-            "Was notierst du für den Wiedereinstieg?"
+            "Was ist der nächste Schritt?",
+            "Womit machst du weiter?"
         ],
         [PromptKind.CompletionLead] =
         [
-            "Fertig mit: ",
-            "Geschafft: ",
-            "Erledigt: ",
-            "Ziel erreicht — "
+            "Fertig: ",
+            "Erledigt: "
         ],
         [PromptKind.DistractionLead] =
         [
             "Gehört das zu: ",
-            "Ist das Teil von: ",
-            "Passt das zu deinem Ziel: ",
-            "Willst du das jetzt für: "
+            "Teil von: "
         ],
         [PromptKind.Extension] =
         [
             "Wie viel Zeit brauchst du noch?",
-            "Wie lange brauchst du noch?",
-            "Wie viel zusätzliche Zeit nimmst du dir?",
-            "Bis wann willst du weiterarbeiten?"
+            "Wie lange noch?"
         ]
     };
 

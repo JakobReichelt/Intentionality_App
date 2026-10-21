@@ -69,7 +69,7 @@ public sealed partial class AppHost
                 _prompts.Pick(PromptKind.DistractionLead),
                 goal,
                 DistractionRules.DisplayName(_session.Snapshot.PendingDistraction ?? ""),
-                belongs => Accept(() => ResolveDistraction(belongs), FadeOutAndUnlock)),
+                belongs => Accept(() => ResolveDistraction(belongs), () => AfterDistractionResolved(belongs))),
             SessionPhase.OnBreak => BreakStep.Create(_session.GetRemaining),
             _ => throw new ArgumentOutOfRangeException(nameof(phase), phase, "Für diese Phase gibt es keinen Schritt.")
         };
@@ -79,7 +79,7 @@ public sealed partial class AppHost
     {
         var snap = _session.Snapshot;
         if (!string.IsNullOrWhiteSpace(snap.PreviousResumeNote))
-            return $"Nächster Schritt von letztem Mal: {snap.PreviousResumeNote}";
+            return $"Letzter Schritt: {snap.PreviousResumeNote}";
         if (!string.IsNullOrWhiteSpace(snap.PreviousWorkingOn))
             return $"Zuletzt: {snap.PreviousWorkingOn}";
         return null;
@@ -139,12 +139,44 @@ public sealed partial class AppHost
 
     private void ResolveDistraction(bool belongsToGoal)
     {
-        var ruleId = _session.Snapshot.PendingDistraction ?? "";
-        if (!belongsToGoal && !string.IsNullOrWhiteSpace(ruleId))
-            _guard.CloseOffending(ruleId);
+        var ruleId = _session.Snapshot.PendingDistraction
+            ?? _pendingDistraction?.RuleId
+            ?? "";
+        var hit = _pendingDistraction;
+        _pendingDistraction = null;
+
+        if (!belongsToGoal)
+        {
+            // Hide the lock first so topmost enforcement does not steal focus from the target.
+            if (_lock.IsLocked)
+                _lock.HideLock();
+
+            if (hit is not null)
+            {
+                try
+                {
+                    _guard.Close(hit);
+                }
+                catch (Exception ex)
+                {
+                    _log.LogError("Ablenkung konnte nicht geschlossen werden", ex);
+                }
+            }
+
+            // Avoid instantly re-opening the prompt if the tab/app is still closing.
+            _ignoreDistractionsUntil = DateTimeOffset.UtcNow.AddSeconds(12);
+        }
 
         _session.ResolveDistraction(belongsToGoal);
         _log.LogDistraction(ruleId, belongsToGoal);
+    }
+
+    private void AfterDistractionResolved(bool belongsToGoal)
+    {
+        if (belongsToGoal || _lock.IsLocked)
+            FadeOutAndUnlock();
+        else
+            Unlock();
     }
 
     private void EndSessionEarly()
@@ -152,6 +184,7 @@ public sealed partial class AppHost
         if (_session.Phase is not (SessionPhase.Unlocked or SessionPhase.CheckingDistraction))
             return;
 
+        _pendingDistraction = null;
         _session.EndSessionForFeedback();
         _log.LogEndedEarly();
         RenderPhase();
@@ -161,7 +194,8 @@ public sealed partial class AppHost
 
     private void Unlock()
     {
-        _lock.HideLock();
+        if (_lock.IsLocked)
+            _lock.HideLock();
         _tray.SetSessionActive(true);
         UpdateTray();
     }
@@ -169,7 +203,7 @@ public sealed partial class AppHost
     private void EnsureLocked()
     {
         if (!_lock.IsLocked)
-            _lock.ShowLock(SpinnerView.Create());
+            _lock.ShowLock(null);
     }
 
     private void UpdateTray()

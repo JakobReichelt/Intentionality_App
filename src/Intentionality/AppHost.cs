@@ -2,7 +2,6 @@ using System.IO;
 using System.Windows.Threading;
 using Intentionality.Core;
 using Intentionality.Services;
-using Intentionality.UI.Steps;
 using Microsoft.Win32;
 using WpfApplication = System.Windows.Application;
 
@@ -26,6 +25,8 @@ public sealed partial class AppHost : IDisposable
     private readonly EventWaitHandle _endSessionEvent = new(false, EventResetMode.AutoReset, EndSessionSignal.Name);
     private RegisteredWaitHandle? _endSessionWait;
     private SessionSnapshot? _previousSnapshot;
+    private DistractionHit? _pendingDistraction;
+    private DateTimeOffset _ignoreDistractionsUntil = DateTimeOffset.MinValue;
     private bool _started;
 
     public AppHost()
@@ -105,7 +106,6 @@ public sealed partial class AppHost : IDisposable
     private async Task LockAndBeginSessionAsync()
     {
         await DesktopGate.WaitForHomeScreenAsync();
-        _lock.ShowLock(SpinnerView.Create());
 
         var location = await _location.GetLocationAsync();
         _session.BeginFreshSession(location, _previousSnapshot);
@@ -126,14 +126,20 @@ public sealed partial class AppHost : IDisposable
 
     private void PollDistraction()
     {
+        if (DateTimeOffset.UtcNow < _ignoreDistractionsUntil)
+            return;
+
         try
         {
-            var ruleId = _guard.DetectForeground();
-            if (ruleId is null)
+            var hit = _guard.DetectForeground();
+            if (hit is null)
                 return;
 
-            if (_session.ReportDistraction(ruleId))
+            if (_session.ReportDistraction(hit.RuleId))
+            {
+                _pendingDistraction = hit;
                 RenderPhase();
+            }
         }
         catch (Exception ex)
         {
@@ -156,7 +162,6 @@ public sealed partial class AppHost : IDisposable
     {
         try
         {
-            _lock.UpdatePrimaryContent(SpinnerView.Create());
             _session.UpdateLocation(await _location.GetLocationAsync());
             RenderPhase();
         }

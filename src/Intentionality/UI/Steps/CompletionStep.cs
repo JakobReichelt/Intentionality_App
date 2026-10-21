@@ -19,7 +19,7 @@ static class CompletionStep
     {
         var subline = string.IsNullOrWhiteSpace(doneCriterion)
             ? null
-            : $"Fertig, wenn: {doneCriterion}";
+            : $"Fertig wenn: {doneCriterion}";
         return ChoiceStep.Create(lead, goal, Labels, startSelected: No, Shortcuts, index => onConfirm(index == Yes), subline);
     }
 }

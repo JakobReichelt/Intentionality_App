@@ -5,13 +5,16 @@ using Intentionality.Core;
 
 namespace Intentionality.Services;
 
+public sealed record DistractionHit(string RuleId, IntPtr Hwnd, int ProcessId);
+
 /// <summary>
 /// Polls the foreground window for known distractions (YouTube, Reddit, Spotify).
-/// Closing: browsers get Ctrl+W on the active tab; Spotify is closed then killed.
+/// Closing uses the window captured at detection time (not the current foreground),
+/// because the lock overlay is usually in front when the user answers.
 /// </summary>
 public sealed class DistractionGuard
 {
-    public string? DetectForeground()
+    public DistractionHit? DetectForeground()
     {
         var hwnd = GetForegroundWindow();
         if (hwnd == IntPtr.Zero)
@@ -37,81 +40,125 @@ public sealed class DistractionGuard
         }
 
         var title = GetWindowTitle(hwnd);
-        return DistractionRules.Match(processName, title);
+        var ruleId = DistractionRules.Match(processName, title);
+        return ruleId is null ? null : new DistractionHit(ruleId, hwnd, (int)processId);
     }
 
-    public void CloseOffending(string ruleId)
+    public void Close(DistractionHit hit)
     {
-        var hwnd = GetForegroundWindow();
-        if (hwnd == IntPtr.Zero)
+        if (string.Equals(hit.RuleId, DistractionRules.Spotify, StringComparison.OrdinalIgnoreCase))
+        {
+            CloseSpotify(hit.ProcessId);
+            return;
+        }
+
+        CloseBrowserTab(hit.Hwnd, hit.ProcessId);
+    }
+
+    private static void CloseBrowserTab(IntPtr hwnd, int processId)
+    {
+        // Prefer the live main window if the captured hwnd went stale.
+        var target = hwnd != IntPtr.Zero && IsWindow(hwnd)
+            ? hwnd
+            : FindMainWindow(processId);
+
+        if (target == IntPtr.Zero || !IsWindow(target))
             return;
 
-        GetWindowThreadProcessId(hwnd, out var processId);
-        if (processId == 0)
-            return;
+        ForceForeground(target);
+        Thread.Sleep(150);
+        SendCtrlW();
+        Thread.Sleep(250);
+    }
 
-        Process? process = null;
+    private static IntPtr FindMainWindow(int processId)
+    {
         try
         {
-            process = Process.GetProcessById((int)processId);
+            using var process = Process.GetProcessById(processId);
+            return process.MainWindowHandle;
         }
         catch (ArgumentException)
         {
-            return;
+            return IntPtr.Zero;
         }
         catch (InvalidOperationException)
         {
-            return;
+            return IntPtr.Zero;
         }
+    }
+
+    private static void ForceForeground(IntPtr hwnd)
+    {
+        // Allow ourselves to steal focus back to the browser after the lock hides.
+        AllowSetForegroundWindow(UncheckedAsfwAny);
+
+        ShowWindow(hwnd, SwRestore);
+
+        var foreground = GetForegroundWindow();
+        var currentThread = GetCurrentThreadId();
+        var foregroundThread = foreground == IntPtr.Zero
+            ? 0u
+            : GetWindowThreadProcessId(foreground, out _);
+        var targetThread = GetWindowThreadProcessId(hwnd, out _);
+
+        var attachedForeground = false;
+        var attachedTarget = false;
+        if (foregroundThread != 0 && foregroundThread != currentThread)
+            attachedForeground = AttachThreadInput(currentThread, foregroundThread, true);
+        if (targetThread != 0 && targetThread != currentThread)
+            attachedTarget = AttachThreadInput(currentThread, targetThread, true);
+
+        BringWindowToTop(hwnd);
+        SetForegroundWindow(hwnd);
+
+        if (attachedTarget)
+            AttachThreadInput(currentThread, targetThread, false);
+        if (attachedForeground)
+            AttachThreadInput(currentThread, foregroundThread, false);
+    }
+
+    private static void CloseSpotify(int processId)
+    {
+        Process? process = null;
+        try
+        {
+            process = Process.GetProcessById(processId);
+        }
+        catch (ArgumentException)
+        {
+            process = Process.GetProcessesByName("Spotify").FirstOrDefault();
+        }
+
+        if (process is null)
+            return;
 
         using (process)
         {
-            if (string.Equals(ruleId, DistractionRules.Spotify, StringComparison.OrdinalIgnoreCase)
-                || process.ProcessName.Equals("Spotify", StringComparison.OrdinalIgnoreCase))
+            try
             {
-                CloseSpotify(process);
+                if (!process.HasExited)
+                    process.CloseMainWindow();
+            }
+            catch (InvalidOperationException)
+            {
                 return;
             }
 
-            CloseBrowserTab(hwnd);
-        }
-    }
+            if (process.WaitForExit(1500))
+                return;
 
-    private static void CloseBrowserTab(IntPtr hwnd)
-    {
-        SetForegroundWindow(hwnd);
-        // Small delay so focus settles before SendInput.
-        Thread.Sleep(50);
-        SendCtrlW();
-    }
-
-    private static void CloseSpotify(Process process)
-    {
-        try
-        {
-            if (!process.HasExited)
-                process.CloseMainWindow();
-        }
-        catch (InvalidOperationException)
-        {
-            return;
-        }
-
-        if (process.WaitForExit(2000))
-            return;
-
-        try
-        {
-            if (!process.HasExited)
-                process.Kill(entireProcessTree: true);
-        }
-        catch (InvalidOperationException)
-        {
-            // Already gone.
-        }
-        catch (System.ComponentModel.Win32Exception)
-        {
-            // Access denied or already exiting.
+            try
+            {
+                if (!process.HasExited)
+                    process.Kill(entireProcessTree: true);
+            }
+            catch (InvalidOperationException)
+            {
+            }
+            catch (System.ComponentModel.Win32Exception)
+            {
+            }
         }
     }
 
@@ -128,28 +175,46 @@ public sealed class DistractionGuard
 
     private static void SendCtrlW()
     {
+        // Scan-code path is more reliable across browsers than virtual-key-only input.
+        var ctrl = (ushort)MapVirtualKey((uint)VirtualKey.VK_CONTROL, 0);
+        var w = (ushort)MapVirtualKey((uint)VirtualKey.VK_W, 0);
+
         var inputs = new INPUT[4];
-        inputs[0] = KeyDown(VirtualKey.VK_CONTROL);
-        inputs[1] = KeyDown(VirtualKey.VK_W);
-        inputs[2] = KeyUp(VirtualKey.VK_W);
-        inputs[3] = KeyUp(VirtualKey.VK_CONTROL);
-        _ = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+        inputs[0] = Key(ctrl, KeyEventF.KEYEVENTF_SCANCODE);
+        inputs[1] = Key(w, KeyEventF.KEYEVENTF_SCANCODE);
+        inputs[2] = Key(w, KeyEventF.KEYEVENTF_SCANCODE | KeyEventF.KEYEVENTF_KEYUP);
+        inputs[3] = Key(ctrl, KeyEventF.KEYEVENTF_SCANCODE | KeyEventF.KEYEVENTF_KEYUP);
+
+        var size = Marshal.SizeOf<INPUT>();
+        var sent = SendInput((uint)inputs.Length, inputs, size);
+        if (sent == inputs.Length)
+            return;
+
+        // Fallback: virtual-key codes.
+        inputs[0] = Vk(VirtualKey.VK_CONTROL, down: true);
+        inputs[1] = Vk(VirtualKey.VK_W, down: true);
+        inputs[2] = Vk(VirtualKey.VK_W, down: false);
+        inputs[3] = Vk(VirtualKey.VK_CONTROL, down: false);
+        _ = SendInput((uint)inputs.Length, inputs, size);
     }
 
-    private static INPUT KeyDown(VirtualKey key) => new()
+    private static INPUT Key(ushort scan, KeyEventF flags) => new()
     {
         type = InputType.INPUT_KEYBOARD,
         U = new InputUnion
         {
             ki = new KEYBDINPUT
             {
-                wVk = (ushort)key,
-                dwFlags = 0
+                wVk = 0,
+                wScan = scan,
+                dwFlags = flags,
+                time = 0,
+                dwExtraInfo = IntPtr.Zero
             }
         }
     };
 
-    private static INPUT KeyUp(VirtualKey key) => new()
+    private static INPUT Vk(VirtualKey key, bool down) => new()
     {
         type = InputType.INPUT_KEYBOARD,
         U = new InputUnion
@@ -157,10 +222,16 @@ public sealed class DistractionGuard
             ki = new KEYBDINPUT
             {
                 wVk = (ushort)key,
-                dwFlags = KeyEventF.KEYEVENTF_KEYUP
+                wScan = 0,
+                dwFlags = down ? 0 : KeyEventF.KEYEVENTF_KEYUP,
+                time = 0,
+                dwExtraInfo = IntPtr.Zero
             }
         }
     };
+
+    private const int SwRestore = 9;
+    private const uint UncheckedAsfwAny = 0xFFFFFFFF;
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
@@ -176,6 +247,27 @@ public sealed class DistractionGuard
 
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool AllowSetForegroundWindow(uint dwProcessId);
+
+    [DllImport("user32.dll")]
+    private static extern bool BringWindowToTop(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+
+    [DllImport("user32.dll")]
+    private static extern uint MapVirtualKey(uint uCode, uint uMapType);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
@@ -194,7 +286,8 @@ public sealed class DistractionGuard
     [Flags]
     private enum KeyEventF : uint
     {
-        KEYEVENTF_KEYUP = 0x0002
+        KEYEVENTF_KEYUP = 0x0002,
+        KEYEVENTF_SCANCODE = 0x0008
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -204,10 +297,24 @@ public sealed class DistractionGuard
         public InputUnion U;
     }
 
+    // Union must be sized like MOUSEINPUT or SendInput fails on 64-bit.
     [StructLayout(LayoutKind.Explicit)]
     private struct InputUnion
     {
+        [FieldOffset(0)] public MOUSEINPUT mi;
         [FieldOffset(0)] public KEYBDINPUT ki;
+        [FieldOffset(0)] public HARDWAREINPUT hi;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MOUSEINPUT
+    {
+        public int dx;
+        public int dy;
+        public uint mouseData;
+        public uint dwFlags;
+        public uint time;
+        public IntPtr dwExtraInfo;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -218,5 +325,13 @@ public sealed class DistractionGuard
         public KeyEventF dwFlags;
         public uint time;
         public IntPtr dwExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct HARDWAREINPUT
+    {
+        public uint uMsg;
+        public ushort wParamL;
+        public ushort wParamH;
     }
 }
