@@ -6,8 +6,10 @@ namespace Intentionality.Services;
 
 public sealed class MarkdownLogWriter
 {
+    private const int SessionHeading = 3;
+    private const int CycleHeading = 4;
+
     private readonly string _path;
-    private readonly object _gate = new();
     private CycleNotes _cycle = new();
 
     public MarkdownLogWriter(string? path = null)
@@ -22,7 +24,7 @@ public sealed class MarkdownLogWriter
     {
         ResetCycle();
         AppendEvent(
-            3,
+            SessionHeading,
             "Sitzung",
             $"- Ort: {snapshot.Location?.ToLogString() ?? "nicht verfügbar"}",
             WorkLine(snapshot),
@@ -31,49 +33,37 @@ public sealed class MarkdownLogWriter
             UntilLine(snapshot.DeadlineUtc));
     }
 
-    public void LogInterrupted(SessionSnapshot? previous)
+    public void LogInterrupted(SessionSnapshot previous)
     {
         ResetCycle();
         AppendEvent(
-            3,
+            SessionHeading,
             "Sitzung unterbrochen (neue Anmeldung)",
-            previous is null ? null : $"- Vorherige Phase: {FormatPhase(previous.Phase)}",
+            $"- Vorherige Phase: {FormatPhase(previous.Phase)}",
             WorkLine(previous, "Vorher woran"),
             GoalLine(previous, "Vorheriges Ziel"),
-            UntilLine(previous?.DeadlineUtc, "Vorherige Frist"));
+            UntilLine(previous.DeadlineUtc, "Vorherige Frist"));
     }
 
-    public void LogEndedEarly(SessionSnapshot snapshot)
-    {
-        _cycle.EndedEarlyAt = DateTimeOffset.Now;
-    }
+    public void LogEndedEarly() => _cycle.EndedEarlyAt = DateTimeOffset.Now;
 
-    public void LogTimeExpired(SessionSnapshot snapshot)
-    {
-        _cycle.TimeExpiredAt = DateTimeOffset.Now;
-    }
+    public void LogTimeExpired() => _cycle.TimeExpiredAt = DateTimeOffset.Now;
 
-    public void LogGoalCheck(SessionSnapshot snapshot, bool completed)
-    {
-        _cycle.Completed = completed;
-    }
+    public void LogGoalCheck(bool completed) => _cycle.Completed = completed;
 
-    public void LogReflection(SessionSnapshot snapshot, AmbitionLevel level)
-    {
-        _cycle.GoalSize = AmbitionLevelLabels.ToDisplay(level);
-    }
+    public void LogReflection(AmbitionLevel level) => _cycle.GoalSize = AmbitionLevelLabels.ToDisplay(level);
 
     public void LogExtension(SessionSnapshot snapshot)
     {
         AppendEvent(
-            4,
+            CycleHeading,
             "Verlängert",
             WorkLine(snapshot),
             GoalLine(snapshot),
-            _cycle.Completed is bool completed ? $"- Erreicht: {(completed ? "Ja" : "Nein")}" : null,
-            _cycle.GoalSize is not null ? $"- Zielgröße: {_cycle.GoalSize}" : null,
-            _cycle.EndedEarlyAt is DateTimeOffset ended ? $"- Vorzeitig beendet: {FormatLocal(ended)}" : null,
-            _cycle.TimeExpiredAt is DateTimeOffset expired ? $"- Zeit abgelaufen: {FormatLocal(expired)}" : null,
+            CompletedLine(),
+            GoalSizeLine(),
+            _cycle.EndedEarlyAt is { } ended ? $"- Vorzeitig beendet: {FormatLocal(ended)}" : null,
+            _cycle.TimeExpiredAt is { } expired ? $"- Zeit abgelaufen: {FormatLocal(expired)}" : null,
             $"- Zusätzliche Zeit: {FormatDuration(snapshot.RequestedDuration)}",
             UntilLine(snapshot.DeadlineUtc));
         ResetCycle();
@@ -82,74 +72,61 @@ public sealed class MarkdownLogWriter
     public void LogBreakStarted(SessionSnapshot snapshot)
     {
         AppendEvent(
-            4,
+            CycleHeading,
             "Pause",
             WorkLine(snapshot),
             GoalLine(snapshot),
-            _cycle.Completed is bool completed ? $"- Erreicht: {(completed ? "Ja" : "Nein")}" : null,
-            _cycle.GoalSize is not null ? $"- Zielgröße: {_cycle.GoalSize}" : null,
-            $"- Dauer: {FormatDuration(SessionController.MandatoryBreak)}",
+            CompletedLine(),
+            GoalSizeLine(),
+            $"- Dauer: {FormatDuration(snapshot.ActiveBreakDuration ?? SessionController.MandatoryBreak)}",
             UntilLine(snapshot.BreakEndsAtUtc, "Pause bis"));
         ResetCycle();
     }
 
-    public void LogBreakEnded(SessionSnapshot snapshot)
+    public void LogError(string title, Exception exception)
     {
+        AppendEvent(SessionHeading, title, $"- Fehler: {exception.Message}");
     }
 
-    public void LogLocationSample(LocationInfo location)
+    public static string FormatLocal(DateTimeOffset value)
     {
-        AppendEvent(3, "Ort erfasst", $"- Ort: {location.ToLogString()}");
+        var local = value.ToLocalTime();
+        return $"{local:yyyy-MM-dd HH:mm:ss} {ZoneAbbreviation(local)}";
     }
 
-    public void AppendRaw(string markdownBlock)
+    public static string FormatDuration(TimeSpan? duration)
     {
-        Append(markdownBlock.TrimEnd() + Environment.NewLine);
+        if (duration is not { } value)
+            return "n/a";
+
+        if (value.TotalHours >= 1)
+        {
+            var hours = (int)value.TotalHours;
+            if (value.Minutes == 0)
+                return hours == 1 ? "1 Stunde" : $"{hours} Stunden";
+            return $"{hours} Std. {value.Minutes} Min.";
+        }
+
+        var minutes = (int)Math.Round(value.TotalMinutes);
+        return minutes == 1 ? "1 Minute" : $"{minutes} Minuten";
     }
 
     private void ResetCycle() => _cycle = new CycleNotes();
 
-    private sealed class CycleNotes
-    {
-        public DateTimeOffset? EndedEarlyAt { get; set; }
-        public DateTimeOffset? TimeExpiredAt { get; set; }
-        public bool? Completed { get; set; }
-        public string? GoalSize { get; set; }
-    }
+    private string? CompletedLine() =>
+        _cycle.Completed is { } completed ? $"- Erreicht: {(completed ? "Ja" : "Nein")}" : null;
 
-    private void AppendEvent(int level, string title, params string?[] lines)
-    {
-        var sb = new StringBuilder();
-        sb.AppendLine($"{new string('#', level)} {FormatLocal(DateTimeOffset.Now)} — {title}");
-        foreach (var line in lines)
-        {
-            if (!string.IsNullOrWhiteSpace(line))
-                sb.AppendLine(line);
-        }
+    private string? GoalSizeLine() =>
+        _cycle.GoalSize is { } goalSize ? $"- Zielgröße: {goalSize}" : null;
 
-        Append(sb.ToString());
-    }
+    private static string? WorkLine(SessionSnapshot snapshot, string label = "Woran") =>
+        string.IsNullOrWhiteSpace(snapshot.WorkingOn) ? null : $"- {label}: {snapshot.WorkingOn}";
 
-    private static string? WorkLine(SessionSnapshot? snapshot, string label = "Woran")
-    {
-        if (snapshot is null || string.IsNullOrWhiteSpace(snapshot.WorkingOn))
-            return null;
-        return $"- {label}: {snapshot.WorkingOn}";
-    }
+    private static string? GoalLine(SessionSnapshot snapshot, string label = "Ziel") =>
+        string.IsNullOrWhiteSpace(snapshot.Goal) ? null : $"- {label}: {snapshot.Goal}";
 
-    private static string? GoalLine(SessionSnapshot? snapshot, string label = "Ziel")
-    {
-        if (snapshot is null || string.IsNullOrWhiteSpace(snapshot.Goal))
-            return null;
-        return $"- {label}: {snapshot.Goal}";
-    }
-
-    private static string? UntilLine(DateTimeOffset? until, string label = "Frei bis")
-    {
-        if (until is not DateTimeOffset value)
-            return null;
-        return $"- {label}: {FormatLocal(value)}";
-    }
+    private static string? UntilLine(DateTimeOffset? until, string label = "Frei bis") =>
+        until is { } value ? $"- {label}: {FormatLocal(value)}" : null;
 
     private static string FormatPhase(SessionPhase phase) => phase switch
     {
@@ -164,76 +141,54 @@ public sealed class MarkdownLogWriter
         _ => phase.ToString()
     };
 
+    private static string ZoneAbbreviation(DateTimeOffset local)
+    {
+        var zone = TimeZoneInfo.Local;
+        var isDaylight = zone.IsDaylightSavingTime(local);
+        if (IsCentralEurope(zone))
+            return isDaylight ? "CEST" : "CET";
+        if (isDaylight)
+            return "DST";
+
+        var offset = local.Offset;
+        return $"UTC{(offset >= TimeSpan.Zero ? "+" : "")}{offset.Hours:00}:{Math.Abs(offset.Minutes):00}";
+    }
+
+    private static bool IsCentralEurope(TimeZoneInfo zone) =>
+        zone.Id.Contains("W. Europe", StringComparison.OrdinalIgnoreCase)
+        || zone.Id.Contains("Romance", StringComparison.OrdinalIgnoreCase)
+        || zone.StandardName.Contains("Mitteleurop", StringComparison.OrdinalIgnoreCase);
+
+    private void AppendEvent(int headingLevel, string title, params string?[] lines)
+    {
+        var block = new StringBuilder();
+        block.AppendLine($"{new string('#', headingLevel)} {FormatLocal(DateTimeOffset.Now)} — {title}");
+        foreach (var line in lines.Where(line => !string.IsNullOrWhiteSpace(line)))
+            block.AppendLine(line);
+
+        EnsureHeader();
+        File.AppendAllText(_path, block.ToString().TrimEnd() + Environment.NewLine + Environment.NewLine);
+    }
+
     private void EnsureHeader()
     {
-        lock (_gate)
-        {
-            var dir = System.IO.Path.GetDirectoryName(_path);
-            if (!string.IsNullOrEmpty(dir))
-                Directory.CreateDirectory(dir);
+        var dir = System.IO.Path.GetDirectoryName(_path);
+        if (!string.IsNullOrEmpty(dir))
+            Directory.CreateDirectory(dir);
 
-            if (!File.Exists(_path) || new FileInfo(_path).Length == 0)
-            {
-                File.WriteAllText(_path,
-                    "# Intentionality-Protokoll" + Environment.NewLine + Environment.NewLine
-                    + "Fortlaufendes Sitzungsprotokoll." + Environment.NewLine + Environment.NewLine);
-            }
-        }
+        if (File.Exists(_path) && new FileInfo(_path).Length > 0)
+            return;
+
+        File.WriteAllText(_path,
+            "# Intentionality-Protokoll" + Environment.NewLine + Environment.NewLine
+            + "Fortlaufendes Sitzungsprotokoll." + Environment.NewLine + Environment.NewLine);
     }
 
-    private void Append(string block)
+    private sealed class CycleNotes
     {
-        lock (_gate)
-        {
-            EnsureHeader();
-            File.AppendAllText(_path, block.TrimEnd() + Environment.NewLine + Environment.NewLine);
-        }
-    }
-
-    public static string FormatLocal(DateTimeOffset value)
-    {
-        var local = value.ToLocalTime();
-        var tz = TimeZoneInfo.Local;
-        var abbr = tz.IsDaylightSavingTime(local) ? GetDstAbbreviation(tz) : GetStandardAbbreviation(tz);
-        return $"{local:yyyy-MM-dd HH:mm:ss} {abbr}";
-    }
-
-    private static string GetDstAbbreviation(TimeZoneInfo tz)
-    {
-        if (tz.Id.Contains("W. Europe", StringComparison.OrdinalIgnoreCase)
-            || tz.Id.Contains("Romance", StringComparison.OrdinalIgnoreCase)
-            || tz.StandardName.Contains("Mitteleurop", StringComparison.OrdinalIgnoreCase))
-            return "CEST";
-        return "DST";
-    }
-
-    private static string GetStandardAbbreviation(TimeZoneInfo tz)
-    {
-        if (tz.Id.Contains("W. Europe", StringComparison.OrdinalIgnoreCase)
-            || tz.Id.Contains("Romance", StringComparison.OrdinalIgnoreCase)
-            || tz.StandardName.Contains("Mitteleurop", StringComparison.OrdinalIgnoreCase))
-            return "CET";
-        return tz.GetUtcOffset(DateTimeOffset.Now) is var offset
-            ? $"UTC{(offset >= TimeSpan.Zero ? "+" : "")}{offset.Hours:00}:{Math.Abs(offset.Minutes):00}"
-            : "local";
-    }
-
-    public static string FormatDuration(TimeSpan? duration)
-    {
-        if (duration is null)
-            return "n/a";
-
-        var d = duration.Value;
-        if (d.TotalHours >= 1)
-        {
-            var hours = (int)d.TotalHours;
-            var minutes = d.Minutes;
-            if (minutes == 0)
-                return hours == 1 ? "1 Stunde" : $"{hours} Stunden";
-            return $"{hours} Std. {minutes} Min.";
-        }
-
-        var mins = (int)Math.Round(d.TotalMinutes);
-        return mins == 1 ? "1 Minute" : $"{mins} Minuten";
+        public DateTimeOffset? EndedEarlyAt { get; set; }
+        public DateTimeOffset? TimeExpiredAt { get; set; }
+        public bool? Completed { get; set; }
+        public string? GoalSize { get; set; }
     }
 }

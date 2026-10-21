@@ -76,20 +76,19 @@ public static class FrostedBackdrop
                 return null;
 
             var longEdge = Math.Max(screen.Width, screen.Height);
-            var scale = Math.Min(1.0, 88.0 / longEdge);
+            const double workingLongEdge = 256;
+            var scale = Math.Min(1.0, workingLongEdge / longEdge);
             var width = Math.Max(1, (int)Math.Round(screen.Width * scale));
             var height = Math.Max(1, (int)Math.Round(screen.Height * scale));
             var soft = new Bitmap(width, height, PixelFormat.Format32bppPArgb);
             using (var graphics = Graphics.FromImage(soft))
             {
+                ConfigureQuality(graphics);
                 graphics.PageUnit = GraphicsUnit.Pixel;
-                graphics.InterpolationMode = InterpolationMode.Low;
-                graphics.CompositingQuality = CompositingQuality.HighSpeed;
                 graphics.DrawImage(screen, 0, 0, width, height);
-                using var wash = new SolidBrush(Color.FromArgb(128, 255, 255, 255));
-                graphics.FillRectangle(wash, 0, 0, width, height);
             }
 
+            ApplySilkyBlur(soft, passes: 4);
             return soft;
         }
         catch
@@ -177,6 +176,58 @@ public static class FrostedBackdrop
             DeleteDC(memoryDc);
             DeleteDC(screenDc);
         }
+    }
+
+    static void ConfigureQuality(Graphics graphics)
+    {
+        graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+        graphics.CompositingQuality = CompositingQuality.HighQuality;
+        graphics.SmoothingMode = SmoothingMode.HighQuality;
+        graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+    }
+
+    /// <summary>
+    /// Kawase-style down/up passes: cheap, smooth bloom without harsh pixel blocks.
+    /// </summary>
+    static void ApplySilkyBlur(Bitmap bitmap, int passes)
+    {
+        var width = bitmap.Width;
+        var height = bitmap.Height;
+        Bitmap work = bitmap;
+        for (var pass = 0; pass < passes; pass++)
+        {
+            var smallWidth = Math.Max(1, work.Width / 2);
+            var smallHeight = Math.Max(1, work.Height / 2);
+            using var down = new Bitmap(smallWidth, smallHeight, PixelFormat.Format32bppPArgb);
+            using (var graphics = Graphics.FromImage(down))
+            {
+                ConfigureQuality(graphics);
+                graphics.DrawImage(work, 0, 0, smallWidth, smallHeight);
+            }
+
+            if (!ReferenceEquals(work, bitmap))
+                work.Dispose();
+
+            var up = new Bitmap(width, height, PixelFormat.Format32bppPArgb);
+            using (var graphics = Graphics.FromImage(up))
+            {
+                ConfigureQuality(graphics);
+                graphics.DrawImage(down, 0, 0, width, height);
+            }
+
+            work = up;
+        }
+
+        if (ReferenceEquals(work, bitmap))
+            return;
+
+        using (var graphics = Graphics.FromImage(bitmap))
+        {
+            ConfigureQuality(graphics);
+            graphics.DrawImage(work, 0, 0, width, height);
+        }
+
+        work.Dispose();
     }
 
     private static Bitmap CopyFromVirtualScreen(Rectangle bounds)

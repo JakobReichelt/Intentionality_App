@@ -3,6 +3,8 @@ namespace Intentionality.Core;
 public sealed class SessionController
 {
     public static readonly TimeSpan MandatoryBreak = TimeSpan.FromMinutes(5);
+    public static readonly TimeSpan IncompleteFailureBreak = TimeSpan.FromMinutes(2);
+    public static readonly TimeSpan LongSessionThreshold = TimeSpan.FromMinutes(15);
     public static readonly TimeSpan MinimumDuration = TimeSpan.FromMinutes(1);
 
     private readonly IClock _clock;
@@ -20,35 +22,20 @@ public sealed class SessionController
 
     public void BeginFreshSession(LocationInfo? location)
     {
-        _state = new SessionSnapshot
-        {
-            SessionId = Guid.NewGuid(),
-            Phase = SessionPhase.AskingWork,
-            Location = location
-        };
+        _state = NewSession(location);
         RaiseChanged();
     }
 
-    public void Restore(SessionSnapshot snapshot)
+    public void UpdateLocation(LocationInfo? location)
     {
-        _state = snapshot.Clone();
+        _state.Location = location;
         RaiseChanged();
     }
 
     public void SubmitWorkingOn(string text)
     {
         EnsurePhase(SessionPhase.AskingWork);
-        var trimmed = RequireText(text, "Woran du arbeitest");
-        _state.WorkingOn = trimmed;
-        _state.Phase = SessionPhase.AskingDuration;
-        RaiseChanged();
-    }
-
-    public void SubmitDuration(TimeSpan duration)
-    {
-        EnsurePhase(SessionPhase.AskingDuration);
-        RequireDuration(duration);
-        _state.RequestedDuration = duration;
+        _state.WorkingOn = RequireText(text, "Woran du arbeitest");
         _state.Phase = SessionPhase.AskingGoal;
         RaiseChanged();
     }
@@ -56,10 +43,15 @@ public sealed class SessionController
     public void SubmitGoal(string goal)
     {
         EnsurePhase(SessionPhase.AskingGoal);
-        var trimmed = RequireText(goal, "Sitzungsziel");
-        _state.Goal = trimmed;
-        _state.DeadlineUtc = _clock.UtcNow.Add(_state.RequestedDuration!.Value);
-        _state.Phase = SessionPhase.Unlocked;
+        _state.Goal = RequireText(goal, "Sitzungsziel");
+        _state.Phase = SessionPhase.AskingDuration;
+        RaiseChanged();
+    }
+
+    public void SubmitDuration(TimeSpan duration)
+    {
+        EnsurePhase(SessionPhase.AskingDuration);
+        StartTimer(duration);
         RaiseChanged();
     }
 
@@ -67,6 +59,7 @@ public sealed class SessionController
     {
         EnsurePhase(SessionPhase.AskingCompletion);
         _state.LastCompleted = completed;
+        _state.PendingIncompleteFailureBreak = !completed && RequiresIncompleteFailureBreak(_state);
         _state.Phase = SessionPhase.AskingReflection;
         RaiseChanged();
     }
@@ -75,35 +68,37 @@ public sealed class SessionController
     {
         EnsurePhase(SessionPhase.Unlocked);
         _state.DeadlineUtc = null;
+        _state.ExpiredByTimer = false;
         _state.Phase = SessionPhase.AskingCompletion;
         RaiseChanged();
     }
 
-    public void SubmitReflection(AmbitionLevel level, bool distracted)
+    public void SubmitReflection(AmbitionLevel level)
     {
         EnsurePhase(SessionPhase.AskingReflection);
         _state.LastAmbitionLevel = level;
-        _state.LastDistracted = distracted;
+
         if (_state.LastCompleted == true)
         {
-            _state.BreakEndsAtUtc = _clock.UtcNow.Add(MandatoryBreak);
-            _state.DeadlineUtc = null;
-            _state.Phase = SessionPhase.OnBreak;
+            StartBreak(MandatoryBreak, phaseAfterBreak: null);
+        }
+        else if (_state.PendingIncompleteFailureBreak)
+        {
+            _state.PendingIncompleteFailureBreak = false;
+            StartBreak(IncompleteFailureBreak, SessionPhase.AskingExtension);
         }
         else
         {
             _state.Phase = SessionPhase.AskingExtension;
         }
+
         RaiseChanged();
     }
 
     public void SubmitExtension(TimeSpan duration)
     {
         EnsurePhase(SessionPhase.AskingExtension);
-        RequireDuration(duration);
-        _state.RequestedDuration = duration;
-        _state.DeadlineUtc = _clock.UtcNow.Add(duration);
-        _state.Phase = SessionPhase.Unlocked;
+        StartTimer(duration);
         RaiseChanged();
     }
 
@@ -113,49 +108,82 @@ public sealed class SessionController
     public bool Tick()
     {
         var now = _clock.UtcNow;
-        if (_state.Phase == SessionPhase.Unlocked
-            && _state.DeadlineUtc is DateTimeOffset deadline
-            && now >= deadline)
+        if (_state.Phase == SessionPhase.Unlocked && _state.DeadlineUtc is { } deadline && now >= deadline)
         {
+            _state.ExpiredByTimer = true;
             _state.Phase = SessionPhase.AskingCompletion;
-            RaiseChanged();
-            return true;
         }
-
-        if (_state.Phase == SessionPhase.OnBreak
-            && _state.BreakEndsAtUtc is DateTimeOffset breakEnd
-            && now >= breakEnd)
+        else if (_state.Phase == SessionPhase.OnBreak && _state.BreakEndsAtUtc is { } breakEnd && now >= breakEnd)
         {
-            var location = _state.Location;
-            _state = new SessionSnapshot
-            {
-                SessionId = Guid.NewGuid(),
-                Phase = SessionPhase.AskingWork,
-                Location = location
-            };
-            RaiseChanged();
-            return true;
+            EndBreak();
+        }
+        else
+        {
+            return false;
         }
 
-        return false;
+        RaiseChanged();
+        return true;
     }
 
     public TimeSpan? GetRemaining()
     {
-        var now = _clock.UtcNow;
-        if (_state.Phase == SessionPhase.Unlocked && _state.DeadlineUtc is DateTimeOffset deadline)
+        DateTimeOffset? end = _state.Phase switch
         {
-            var remaining = deadline - now;
-            return remaining < TimeSpan.Zero ? TimeSpan.Zero : remaining;
+            SessionPhase.Unlocked => _state.DeadlineUtc,
+            SessionPhase.OnBreak => _state.BreakEndsAtUtc,
+            _ => null
+        };
+        if (end is not { } endsAt)
+            return null;
+
+        var remaining = endsAt - _clock.UtcNow;
+        return remaining < TimeSpan.Zero ? TimeSpan.Zero : remaining;
+    }
+
+    internal static bool RequiresIncompleteFailureBreak(SessionSnapshot state) =>
+        state.LastCompleted == false
+        && state.ExpiredByTimer
+        && state.RequestedDuration is TimeSpan duration
+        && duration >= LongSessionThreshold;
+
+    private static SessionSnapshot NewSession(LocationInfo? location) => new()
+    {
+        SessionId = Guid.NewGuid(),
+        Phase = SessionPhase.AskingWork,
+        Location = location
+    };
+
+    private void StartTimer(TimeSpan duration)
+    {
+        RequireDuration(duration);
+        _state.RequestedDuration = duration;
+        _state.DeadlineUtc = _clock.UtcNow.Add(duration);
+        _state.Phase = SessionPhase.Unlocked;
+    }
+
+    private void StartBreak(TimeSpan duration, SessionPhase? phaseAfterBreak)
+    {
+        _state.BreakEndsAtUtc = _clock.UtcNow.Add(duration);
+        _state.ActiveBreakDuration = duration;
+        _state.PhaseAfterBreak = phaseAfterBreak;
+        _state.DeadlineUtc = null;
+        _state.Phase = SessionPhase.OnBreak;
+    }
+
+    private void EndBreak()
+    {
+        if (_state.PhaseAfterBreak != SessionPhase.AskingExtension)
+        {
+            _state = NewSession(_state.Location);
+            return;
         }
 
-        if (_state.Phase == SessionPhase.OnBreak && _state.BreakEndsAtUtc is DateTimeOffset breakEnd)
-        {
-            var remaining = breakEnd - now;
-            return remaining < TimeSpan.Zero ? TimeSpan.Zero : remaining;
-        }
-
-        return null;
+        _state.Phase = SessionPhase.AskingExtension;
+        _state.BreakEndsAtUtc = null;
+        _state.ActiveBreakDuration = null;
+        _state.PhaseAfterBreak = null;
+        _state.ExpiredByTimer = false;
     }
 
     private void EnsurePhase(SessionPhase expected)

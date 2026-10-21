@@ -16,7 +16,13 @@
             <RowDefinition Height="*" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
-        <Image x:Name="BackdropImage" Stretch="UniformToFill" Grid.RowSpan="2" />
+        <Image x:Name="BackdropImage"
+               Stretch="UniformToFill"
+               Grid.RowSpan="2"
+               RenderOptions.BitmapScalingMode="Fant" />
+        <Rectangle Grid.RowSpan="2"
+                   IsHitTestVisible="False"
+                   Fill="#A8FFFFFF" />
         <Border x:Name="ContentHost"
                 Grid.Row="1"
                 HorizontalAlignment="Center"

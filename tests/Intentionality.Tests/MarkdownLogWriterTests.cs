@@ -30,9 +30,9 @@ public class MarkdownLogWriterTests
             };
 
             log.LogSessionStarted(snap);
-            log.LogEndedEarly(snap);
-            log.LogGoalCheck(snap, completed: false);
-            log.LogReflection(snap, AmbitionLevel.FarTooAmbitious);
+            log.LogEndedEarly();
+            log.LogGoalCheck(completed: false);
+            log.LogReflection(AmbitionLevel.FarTooAmbitious);
             snap.RequestedDuration = TimeSpan.FromMinutes(15);
             snap.DeadlineUtc = DateTimeOffset.UtcNow.AddMinutes(15);
             log.LogExtension(snap);
@@ -49,7 +49,7 @@ public class MarkdownLogWriterTests
             Assert.Contains("52.37400", text);
             Assert.Contains("Zeit: 45 Minuten", text);
             Assert.Contains("Erreicht: Nein", text);
-            Assert.Contains("Zielgröße: Viel zu groß, aufteilen", text);
+            Assert.Contains("Zielgröße: Zu groß", text);
             Assert.Contains("Zusätzliche Zeit: 15 Minuten", text);
             Assert.Contains("Vorzeitig beendet:", text);
             Assert.DoesNotContain("Abgelenkt", text);
@@ -81,15 +81,15 @@ public class MarkdownLogWriterTests
 
             log.LogSessionStarted(snap);
 
-            log.LogGoalCheck(snap, completed: false);
-            log.LogReflection(snap, AmbitionLevel.ABitTooAmbitious);
+            log.LogGoalCheck(completed: false);
+            log.LogReflection(AmbitionLevel.ABitTooAmbitious);
             snap.RequestedDuration = TimeSpan.FromMinutes(20);
             snap.DeadlineUtc = firstUntil;
             log.LogExtension(snap);
 
-            log.LogTimeExpired(snap);
-            log.LogGoalCheck(snap, completed: false);
-            log.LogReflection(snap, AmbitionLevel.AboutRight);
+            log.LogTimeExpired();
+            log.LogGoalCheck(completed: false);
+            log.LogReflection(AmbitionLevel.AboutRight);
             snap.RequestedDuration = TimeSpan.FromMinutes(10);
             snap.DeadlineUtc = secondUntil;
             log.LogExtension(snap);
@@ -98,7 +98,7 @@ public class MarkdownLogWriterTests
             Assert.Equal(1, CountHeadings(text, 3));
             Assert.Equal(2, CountHeadings(text, 4));
             Assert.Equal(2, CountOf(text, "— Verlängert"));
-            Assert.Contains("Zielgröße: Zu groß, aufteilen", text);
+            Assert.Contains("Zielgröße: Zu groß", text);
             Assert.Contains("Zielgröße: Passend", text);
             Assert.Contains("Zeit: 30 Minuten", text);
             Assert.Contains("Zusätzliche Zeit: 20 Minuten", text);
@@ -115,11 +115,32 @@ public class MarkdownLogWriterTests
             Assert.True(first < second);
             var firstBlock = text[first..second];
             var secondBlock = text[second..];
-            Assert.Contains("Zielgröße: Zu groß, aufteilen", firstBlock);
+            Assert.Contains("Zielgröße: Zu groß", firstBlock);
             Assert.Contains("Zusätzliche Zeit: 20 Minuten", firstBlock);
             Assert.Contains("Zielgröße: Passend", secondBlock);
             Assert.Contains("Zusätzliche Zeit: 10 Minuten", secondBlock);
             Assert.Contains("Zeit abgelaufen:", secondBlock);
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void LogError_WritesTitleAndMessage()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "intentionality-test-" + Guid.NewGuid() + ".md");
+        try
+        {
+            var log = new MarkdownLogWriter(path);
+
+            log.LogError("Zustand konnte nicht gespeichert werden", new IOException("Datei gesperrt"));
+
+            var text = File.ReadAllText(path);
+            Assert.Contains("— Zustand konnte nicht gespeichert werden", text);
+            Assert.Contains("- Fehler: Datei gesperrt", text);
         }
         finally
         {

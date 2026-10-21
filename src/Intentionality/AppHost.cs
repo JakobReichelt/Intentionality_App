@@ -1,4 +1,4 @@
-using System.Windows;
+using System.IO;
 using System.Windows.Threading;
 using Intentionality.Core;
 using Intentionality.Services;
@@ -8,12 +8,15 @@ using WpfApplication = System.Windows.Application;
 
 namespace Intentionality;
 
+/// <summary>
+/// App lifecycle: startup, clock ticks, power events and shutdown.
+/// Which step is shown for which phase lives in AppHost.Flow.cs.
+/// </summary>
 public sealed partial class AppHost : IDisposable
 {
     private readonly SessionController _session = new();
     private readonly StateStore _stateStore = new();
     private readonly MarkdownLogWriter _log = new();
-    private readonly NetworkService _network = new();
     private readonly LocationService _location = new();
     private readonly LockOverlayService _lock = new();
     private readonly TrayService _tray;
@@ -25,16 +28,11 @@ public sealed partial class AppHost : IDisposable
     public AppHost()
     {
         _tray = new TrayService(WpfApplication.Current.Dispatcher);
-        _tickTimer = new DispatcherTimer
-        {
-            Interval = TimeSpan.FromSeconds(1)
-        };
-        _tickTimer.Tick += (_, _) => OnTick();
+        _tickTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _tickTimer.Tick += (_, _) => AdvanceClock();
         _session.StateChanged += PersistState;
         _tray.EndSessionRequested += EndSessionEarly;
     }
-
-    public string LogPath => _log.Path;
 
     public async Task StartAsync()
     {
@@ -43,26 +41,24 @@ public sealed partial class AppHost : IDisposable
         _started = true;
 
         _tray.Show();
-        _endSessionWait = ThreadPool.RegisterWaitForSingleObject(
-            _endSessionEvent,
-            (_, _) => WpfApplication.Current.Dispatcher.BeginInvoke(EndSessionEarly),
-            null,
-            Timeout.Infinite,
-            executeOnlyOnce: false);
+        ListenForEndSessionSignal();
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
 
-        var previous = _stateStore.Load();
-        if (previous is not null
-            && previous.Phase is SessionPhase.Unlocked or SessionPhase.OnBreak
-                or SessionPhase.AskingCompletion or SessionPhase.AskingReflection
-                or SessionPhase.AskingExtension or SessionPhase.AskingWork
-                or SessionPhase.AskingDuration or SessionPhase.AskingGoal)
-        {
-            _log.LogInterrupted(previous);
-        }
-
-        await EnterLockedQuestionnaireAsync();
+        LogPreviousSessionAsInterrupted();
+        await LockAndBeginSessionAsync();
         _tickTimer.Start();
+    }
+
+    public void LogUnhandledError(Exception exception)
+    {
+        try
+        {
+            _log.LogError("Unerwarteter Fehler", exception);
+        }
+        catch (IOException)
+        {
+            // The caller still shows the error to the user.
+        }
     }
 
     public void Dispose()
@@ -75,86 +71,74 @@ public sealed partial class AppHost : IDisposable
         _endSessionEvent.Dispose();
         _lock.Dispose();
         _tray.Dispose();
+    }
 
-        // Best-effort: if we exit while network is down, restore it.
+    private void ListenForEndSessionSignal()
+    {
+        _endSessionWait = ThreadPool.RegisterWaitForSingleObject(
+            _endSessionEvent,
+            (_, _) => WpfApplication.Current.Dispatcher.BeginInvoke(EndSessionEarly),
+            null,
+            Timeout.Infinite,
+            executeOnlyOnce: false);
+    }
+
+    private void LogPreviousSessionAsInterrupted()
+    {
         try
         {
-            if (_network.IsDisabled)
-                _network.EnableInternet();
+            if (_stateStore.Load() is { } previous)
+                _log.LogInterrupted(previous);
         }
-        catch
+        catch (Exception ex) when (ex is InvalidDataException or IOException)
         {
-            // emergency script remains available
+            _log.LogError("Gespeicherter Zustand konnte nicht gelesen werden", ex);
         }
     }
 
-    private async Task EnterLockedQuestionnaireAsync()
+    private async Task LockAndBeginSessionAsync()
     {
         await DesktopGate.WaitForHomeScreenAsync();
         _lock.ShowLock(SpinnerView.Create());
 
-        var locationTask = _location.GetLocationAsync();
-        var networkTask = Task.Run(DisableInternet);
-        var location = await locationTask;
-        await networkTask;
-        _log.LogLocationSample(location);
-
+        var location = await _location.GetLocationAsync();
         _session.BeginFreshSession(location);
-        PersistState();
         RenderPhase();
     }
 
-    private void OnTick()
+    private void AdvanceClock()
     {
-        var before = _session.Snapshot;
-        var changed = _session.Tick();
+        var before = _session.Phase;
+        if (_session.Tick())
+            OnTimerElapsed(before);
+
         _tray.UpdateRemaining(_session.GetRemaining());
-
-        if (!changed)
-            return;
-
-        PersistState();
-        LogPhaseTransition(before);
-
-        if (before.Phase == SessionPhase.Unlocked && _session.Phase == SessionPhase.AskingCompletion)
-        {
-            EnterLockForExistingSession();
-            RenderPhase();
-            return;
-        }
-
-        if (before.Phase == SessionPhase.OnBreak && _session.Phase == SessionPhase.AskingWork)
-        {
-            // Still locked; ask for the next session. Refresh location optionally.
-            _ = RefreshLocationThenRenderAsync();
-            return;
-        }
-
-        RenderPhase();
     }
 
-    private void LogPhaseTransition(SessionSnapshot before)
+    private void OnTimerElapsed(SessionPhase before)
     {
-        if (before.Phase == SessionPhase.Unlocked && _session.Phase == SessionPhase.AskingCompletion)
-            _log.LogTimeExpired(before);
-        else if (before.Phase == SessionPhase.OnBreak && _session.Phase == SessionPhase.AskingWork)
-            _log.LogBreakEnded(before);
+        if (before == SessionPhase.Unlocked)
+            _log.LogTimeExpired();
+
+        if (_session.Phase == SessionPhase.AskingWork)
+            _ = RefreshLocationThenRenderAsync();
+        else
+            RenderPhase();
     }
 
     private async Task RefreshLocationThenRenderAsync()
     {
-        var location = await _location.GetLocationAsync();
-        _log.LogLocationSample(location);
-        var snap = _session.Snapshot;
-        snap.Location = location;
-        _session.Restore(snap);
-        PersistState();
-        RenderPhase();
-    }
-
-    private void PersistState()
-    {
-        _stateStore.Save(_session.Snapshot);
+        try
+        {
+            _lock.UpdatePrimaryContent(SpinnerView.Create());
+            _session.UpdateLocation(await _location.GetLocationAsync());
+            RenderPhase();
+        }
+        catch (Exception ex)
+        {
+            _log.LogError("Neue Sitzung konnte nicht vorbereitet werden", ex);
+            RenderPhase();
+        }
     }
 
     private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
@@ -164,25 +148,22 @@ public sealed partial class AppHost : IDisposable
 
         WpfApplication.Current.Dispatcher.BeginInvoke(() =>
         {
-            var before = _session.Snapshot;
-            var changed = _session.Tick();
-            PersistState();
-            if (changed)
-                LogPhaseTransition(before);
-            if (_session.Phase == SessionPhase.AskingCompletion && !_lock.IsLocked)
-            {
-                EnterLockForExistingSession();
+            AdvanceClock();
+            var mustBeLocked = _session.Phase is SessionPhase.AskingCompletion or SessionPhase.OnBreak;
+            if (mustBeLocked && !_lock.IsLocked)
                 RenderPhase();
-            }
-            else if (_session.Phase == SessionPhase.OnBreak && !_lock.IsLocked)
-            {
-                EnsureLocked();
-                RenderPhase();
-            }
-            else
-            {
-                _tray.UpdateRemaining(_session.GetRemaining());
-            }
         });
+    }
+
+    private void PersistState()
+    {
+        try
+        {
+            _stateStore.Save(_session.Snapshot);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _log.LogError("Zustand konnte nicht gespeichert werden", ex);
+        }
     }
 }

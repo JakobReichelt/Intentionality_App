@@ -17,7 +17,6 @@ public static class AppPaths
     }
 
     public static string StateFile => Path.Combine(LocalAppDataDir, "state.json");
-    public static string NetworkStateFile => Path.Combine(LocalAppDataDir, "network-state.json");
 
     /// <summary>
     /// Resolves the markdown log path under the project logs folder when running

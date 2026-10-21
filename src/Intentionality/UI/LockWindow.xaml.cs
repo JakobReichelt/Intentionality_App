@@ -12,6 +12,8 @@ namespace Intentionality.UI;
 
 public partial class LockWindow : Window
 {
+    const double StepContentTopOffset = -88;
+
     public bool IsPrimary { get; }
     public string DeviceName { get; private set; } = "";
 
@@ -89,8 +91,8 @@ public partial class LockWindow : Window
             return;
 
         StepHost.Content = content;
-        var spinner = content is FrameworkElement element && Equals(element.Tag, SpinnerView.Tag);
-        if (spinner)
+        var isSpinner = content is FrameworkElement element && Equals(element.Tag, SpinnerView.Tag);
+        if (isSpinner)
         {
             Grid.SetRow(ContentHost, 0);
             Grid.SetRowSpan(ContentHost, 2);
@@ -102,7 +104,7 @@ public partial class LockWindow : Window
             Grid.SetRow(ContentHost, 1);
             Grid.SetRowSpan(ContentHost, 1);
             ContentHost.VerticalAlignment = VerticalAlignment.Top;
-            ContentHost.Margin = new Thickness(0, -88, 0, 0);
+            ContentHost.Margin = new Thickness(0, StepContentTopOffset, 0, 0);
         }
         if (content is null || !IsVisible)
             return;

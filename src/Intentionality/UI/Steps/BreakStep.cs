@@ -7,31 +7,30 @@ static class BreakStep
 {
     public static UIElement Create(Func<TimeSpan?> remaining)
     {
-        var countdown = new TextBlock
+        var countdown = Theme.TimerDisplay(Theme.Accent);
+        countdown.FontFamily = Theme.ClockFont;
+        countdown.Margin = new Thickness(0, 18, 0, 0);
+
+        void RefreshCountdown()
         {
-            Text = "05:00",
-            FontFamily = Theme.ClockFont,
-            FontSize = Theme.SelectorFontSize,
-            FontWeight = FontWeights.Light,
-            Foreground = Theme.Accent,
-            Margin = new Thickness(0, 18, 0, 0),
-            HorizontalAlignment = HorizontalAlignment.Left
-        };
+            var left = remaining() ?? TimeSpan.Zero;
+            if (left < TimeSpan.Zero)
+                left = TimeSpan.Zero;
+            countdown.Text = FormatCountdown(left);
+        }
 
         var panel = new StackPanel();
         panel.Children.Add(Theme.Title("Pause"));
         panel.Children.Add(countdown);
 
         var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
-        timer.Tick += (_, _) =>
-        {
-            var left = remaining() ?? TimeSpan.Zero;
-            if (left < TimeSpan.Zero)
-                left = TimeSpan.Zero;
-            countdown.Text = $"{left.Minutes:D2}:{left.Seconds:D2}";
-        };
+        timer.Tick += (_, _) => RefreshCountdown();
+        panel.Loaded += (_, _) => RefreshCountdown();
         timer.Start();
         panel.Unloaded += (_, _) => timer.Stop();
         return panel;
     }
+
+    static string FormatCountdown(TimeSpan left) =>
+        $"{(int)left.TotalMinutes:D2}:{left.Seconds:D2}";
 }

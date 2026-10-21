@@ -1,6 +1,5 @@
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Media;
 
 namespace Intentionality.UI.Steps;
 
@@ -32,7 +31,7 @@ static class TextStep
 
     private static TextBlock ErrorLine() => new()
     {
-        Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x6B, 0x6B)),
+        Foreground = Theme.Error,
         Margin = new Thickness(0, 8, 0, 0),
         Visibility = Visibility.Collapsed
     };

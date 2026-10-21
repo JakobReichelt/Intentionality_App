@@ -12,7 +12,7 @@ static class DurationStep
 
     public static UIElement Create(Action<TimeSpan> onSubmit, string title = "Wie viel Zeit brauchst du?")
     {
-        var minutes = 30;
+        var minutes = 10;
         var ready = false;
         var hoursDigit = Digit();
         var minutesDigit = Digit();
@@ -54,8 +54,10 @@ static class DurationStep
         {
             var delta = key switch
             {
-                Key.Up or Key.I => 10,
-                Key.Down or Key.K => -10,
+                Key.Up => 10,
+                Key.I => 5,
+                Key.Down => -10,
+                Key.K => -5,
                 Key.Right or Key.L => 60,
                 Key.Left or Key.J => -60,
                 _ => 0
@@ -73,8 +75,8 @@ static class DurationStep
     private static TextBlock Digit() => new()
     {
         FontFamily = Theme.ClockFont,
-        FontSize = Theme.SelectorFontSize,
-        FontWeight = FontWeights.Light,
+        FontSize = Theme.TimerFontSize,
+        FontWeight = FontWeights.Bold,
         Foreground = Theme.Ink,
         Text = "00",
         RenderTransformOrigin = new Point(0, 0.5)
@@ -92,8 +94,8 @@ static class DurationStep
     {
         Text = ":",
         FontFamily = Theme.ClockFont,
-        FontSize = 48,
-        FontWeight = FontWeights.Light,
+        FontSize = Theme.TimerColonFontSize,
+        FontWeight = FontWeights.Bold,
         Foreground = Theme.Ink,
         Margin = new Thickness(2, 0, 2, 6),
         VerticalAlignment = VerticalAlignment.Center

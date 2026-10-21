@@ -15,10 +15,6 @@
     <Version>1.0.0</Version>
   </PropertyGroup>
 
-  <ItemGroup>
-    <PackageReference Include="System.Management" Version="8.0.0" />
-  </ItemGroup>
-
   <!-- Avoid WinForms/WPF type name collisions project-wide; import WinForms only in tray/overlay files. -->
   <ItemGroup>
     <Using Remove="System.Windows.Forms" />

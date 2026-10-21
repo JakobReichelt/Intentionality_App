@@ -1,6 +1,7 @@
 ﻿using System.Threading;
 using System.Windows;
 using System.Windows.Shell;
+using System.Windows.Threading;
 using Intentionality.Services;
 
 namespace Intentionality;
@@ -8,6 +9,8 @@ namespace Intentionality;
 public partial class App : System.Windows.Application
 {
     private const string MutexName = "Global\\IntentionalityFocusLockSingleton";
+    private const string Caption = "Intentionality";
+
     private Mutex? _mutex;
     private AppHost? _host;
 
@@ -15,59 +18,78 @@ public partial class App : System.Windows.Application
     {
         base.OnStartup(e);
 
-        _mutex = new Mutex(true, MutexName, out var createdNew);
-        if (!createdNew)
+        if (!TryClaimSingleInstance())
         {
-            if (e.Args.Any(arg => string.Equals(arg, EndSessionSignal.Argument, StringComparison.OrdinalIgnoreCase)))
-                EndSessionSignal.Pulse();
-            else
-            {
-                System.Windows.MessageBox.Show(
-                    "Intentionality läuft bereits.",
-                    "Intentionality",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Information);
-            }
+            ForwardToRunningInstance(e.Args);
             Shutdown();
             return;
         }
 
-        DispatcherUnhandledException += (_, args) =>
-        {
-            try
-            {
-                NetworkService.RestoreFromFile(AppPaths.NetworkStateFile);
-            }
-            catch
-            {
-                // ignore
-            }
-
-            System.Windows.MessageBox.Show(
-                "Intentionality ist auf einen Fehler gestoßen und hat die Netzwerkadapter wieder aktiviert.\n\n" + args.Exception.Message,
-                "Intentionality",
-                MessageBoxButton.OK,
-                MessageBoxImage.Error);
-            args.Handled = true;
-        };
-
-        Exit += (_, _) =>
-        {
-            _host?.Dispose();
-            try
-            {
-                _mutex?.ReleaseMutex();
-            }
-            catch
-            {
-                // ignore
-            }
-            _mutex?.Dispose();
-        };
-
+        DispatcherUnhandledException += OnDispatcherUnhandledException;
+        Exit += (_, _) => ReleaseResources();
         JumpList.SetJumpList(this, new JumpList());
 
-        _host = new AppHost();
-        await _host.StartAsync();
+        try
+        {
+            _host = new AppHost();
+            await _host.StartAsync();
+        }
+        catch (Exception ex)
+        {
+            _host?.LogUnhandledError(ex);
+            ShowError("Intentionality konnte nicht gestartet werden.", ex);
+            Shutdown(1);
+        }
     }
+
+    private bool TryClaimSingleInstance()
+    {
+        _mutex = new Mutex(true, MutexName, out var createdNew);
+        if (createdNew)
+            return true;
+
+        _mutex.Dispose();
+        _mutex = null;
+        return false;
+    }
+
+    private static void ForwardToRunningInstance(string[] args)
+    {
+        var endSession = args.Any(arg => string.Equals(arg, EndSessionSignal.Argument, StringComparison.OrdinalIgnoreCase));
+        if (endSession)
+            EndSessionSignal.Pulse();
+        else
+            System.Windows.MessageBox.Show("Intentionality läuft bereits.", Caption, MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs args)
+    {
+        _host?.LogUnhandledError(args.Exception);
+        ShowError("Intentionality ist auf einen Fehler gestoßen.", args.Exception);
+        args.Handled = true;
+    }
+
+    private void ReleaseResources()
+    {
+        _host?.Dispose();
+        if (_mutex is null)
+            return;
+
+        try
+        {
+            _mutex.ReleaseMutex();
+        }
+        catch (ApplicationException)
+        {
+            // Not owned by this thread; disposing still frees the handle.
+        }
+        _mutex.Dispose();
+    }
+
+    private static void ShowError(string message, Exception exception) =>
+        System.Windows.MessageBox.Show(
+            message + "\n\n" + exception.Message,
+            Caption,
+            MessageBoxButton.OK,
+            MessageBoxImage.Error);
 }

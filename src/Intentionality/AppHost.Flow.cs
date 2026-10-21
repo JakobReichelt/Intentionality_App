@@ -1,185 +1,127 @@
+using System.Windows;
 using Intentionality.Core;
-using Intentionality.Services;
 using Intentionality.UI.Steps;
 
 namespace Intentionality;
 
-public partial class AppHost
+public sealed partial class AppHost
 {
-    void EnterLockForExistingSession()
+    private void RenderPhase()
     {
-        _lock.ShowLock(SpinnerView.Create());
-        _ = Task.Run(DisableInternet);
+        var phase = _session.Phase;
+        _tray.SetSessionActive(phase == SessionPhase.Unlocked);
+        _tray.UpdateRemaining(_session.GetRemaining());
+
+        if (phase == SessionPhase.Unlocked)
+        {
+            if (_lock.IsLocked)
+                Unlock();
+            return;
+        }
+
+        EnsureLocked();
+        _lock.UpdatePrimaryContent(CreateStep(phase));
     }
 
-    void DisableInternet()
+    private UIElement CreateStep(SessionPhase phase)
     {
-        try
+        void Accept(Action apply, Action? onApplied = null) =>
+            ApplyInput(phase, apply, onApplied ?? RenderPhase);
+
+        var goal = _session.Snapshot.Goal ?? "";
+
+        return phase switch
         {
-            _network.DisableInternet();
-        }
-        catch (Exception ex)
-        {
-            _log.AppendRaw($"### {MarkdownLogWriter.FormatLocal(DateTimeOffset.Now)} — Netzwerk konnte nicht deaktiviert werden\n- Fehler: {ex.Message}\n");
-        }
+            SessionPhase.AskingWork => TextStep.Create(
+                "Woran arbeitest du gerade?",
+                text => Accept(() => _session.SubmitWorkingOn(text))),
+            SessionPhase.AskingGoal => TextStep.Create(
+                "Was ist das Ziel dieser Sitzung?",
+                text => Accept(() => _session.SubmitGoal(text))),
+            SessionPhase.AskingDuration => DurationStep.Create(
+                duration => Accept(() => StartSession(duration), FadeOutAndUnlock)),
+            SessionPhase.AskingCompletion => CompletionStep.Create(
+                goal,
+                completed => Accept(() => ConfirmCompletion(completed))),
+            SessionPhase.AskingReflection => GoalSizeStep.Create(
+                goal,
+                level => Accept(() => ConfirmGoalSize(level))),
+            SessionPhase.AskingExtension => DurationStep.Create(
+                duration => Accept(() => ExtendSession(duration), FadeOutAndUnlock),
+                "Wie viel Zeit brauchst du noch?"),
+            SessionPhase.OnBreak => BreakStep.Create(_session.GetRemaining),
+            _ => throw new ArgumentOutOfRangeException(nameof(phase), phase, "Für diese Phase gibt es keinen Schritt.")
+        };
     }
 
-    void Unlock()
+    private void ApplyInput(SessionPhase stepPhase, Action apply, Action onApplied)
     {
+        // A step can outlive its phase, e.g. a second Enter during the unlock fade-out.
+        if (_session.Phase != stepPhase)
+            return;
+
         try
         {
-            _network.EnableInternet();
+            apply();
         }
-        catch (Exception ex)
+        catch (ArgumentException ex)
         {
-            _log.AppendRaw($"### {MarkdownLogWriter.FormatLocal(DateTimeOffset.Now)} — Netzwerk konnte nicht wiederhergestellt werden\n- Fehler: {ex.Message}\n");
+            _log.LogError("Eingabe wurde abgelehnt", ex);
+            RenderPhase();
+            return;
         }
 
+        onApplied();
+    }
+
+    private void StartSession(TimeSpan duration)
+    {
+        _session.SubmitDuration(duration);
+        _log.LogSessionStarted(_session.Snapshot);
+    }
+
+    private void ConfirmCompletion(bool completed)
+    {
+        _session.SubmitGoalCompleted(completed);
+        _log.LogGoalCheck(completed);
+    }
+
+    private void ConfirmGoalSize(AmbitionLevel level)
+    {
+        _session.SubmitReflection(level);
+        _log.LogReflection(level);
+        if (_session.Phase == SessionPhase.OnBreak)
+            _log.LogBreakStarted(_session.Snapshot);
+    }
+
+    private void ExtendSession(TimeSpan duration)
+    {
+        _session.SubmitExtension(duration);
+        _log.LogExtension(_session.Snapshot);
+    }
+
+    private void EndSessionEarly()
+    {
+        if (_session.Phase != SessionPhase.Unlocked)
+            return;
+
+        _session.EndSessionForFeedback();
+        _log.LogEndedEarly();
+        RenderPhase();
+    }
+
+    private void FadeOutAndUnlock() => _lock.FadeOutThen(Unlock);
+
+    private void Unlock()
+    {
         _lock.HideLock();
         _tray.SetSessionActive(true);
         _tray.UpdateRemaining(_session.GetRemaining());
     }
 
-    void EndSessionEarly()
+    private void EnsureLocked()
     {
-        if (_session.Phase != SessionPhase.Unlocked)
-            return;
-
-        _log.LogEndedEarly(_session.Snapshot);
-        _session.EndSessionForFeedback();
-        PersistState();
-        EnterLockForExistingSession();
-        RenderPhase();
-    }
-
-    void RenderPhase()
-    {
-        var snap = _session.Snapshot;
-        _tray.SetSessionActive(snap.Phase == SessionPhase.Unlocked);
-
-        switch (snap.Phase)
-        {
-            case SessionPhase.AskingWork:
-                ShowWork();
-                break;
-            case SessionPhase.AskingDuration:
-                ShowDuration();
-                break;
-            case SessionPhase.AskingGoal:
-                ShowGoal();
-                break;
-            case SessionPhase.Unlocked:
-                if (_lock.IsLocked)
-                    Unlock();
-                _tray.UpdateRemaining(_session.GetRemaining());
-                break;
-            case SessionPhase.AskingCompletion:
-                ShowCompletion(snap);
-                break;
-            case SessionPhase.AskingReflection:
-                ShowReflection();
-                break;
-            case SessionPhase.AskingExtension:
-                ShowExtension();
-                break;
-            case SessionPhase.OnBreak:
-                EnsureLocked();
-                _lock.UpdatePrimaryContent(BreakStep.Create(() => _session.GetRemaining()));
-                _tray.UpdateRemaining(_session.GetRemaining());
-                break;
-        }
-    }
-
-    void ShowWork()
-    {
-        EnsureLocked();
-        _lock.UpdatePrimaryContent(TextStep.Create("Woran arbeitest du gerade?", text =>
-        {
-            _session.SubmitWorkingOn(text);
-            PersistState();
-            RenderPhase();
-        }));
-    }
-
-    void ShowDuration()
-    {
-        EnsureLocked();
-        _lock.UpdatePrimaryContent(DurationStep.Create(duration =>
-        {
-            _session.SubmitDuration(duration);
-            PersistState();
-            RenderPhase();
-        }));
-    }
-
-    void ShowGoal()
-    {
-        EnsureLocked();
-        _lock.UpdatePrimaryContent(TextStep.Create("Was ist das Ziel dieser Sitzung?", goal =>
-        {
-            _session.SubmitGoal(goal);
-            _log.LogSessionStarted(_session.Snapshot);
-            PersistState();
-            _lock.FadeOutThen(Unlock);
-        }));
-    }
-
-    void ShowCompletion(SessionSnapshot snap)
-    {
-        EnsureLocked();
-        _lock.UpdatePrimaryContent(OptionStep.Create(
-            "Hast du das Ziel erreicht?",
-            snap.Goal,
-            ["Ja", "Nein"],
-            start: 1,
-            index =>
-            {
-                var completed = index == 0;
-                _log.LogGoalCheck(_session.Snapshot, completed);
-                _session.SubmitGoalCompleted(completed);
-                PersistState();
-                RenderPhase();
-            }));
-    }
-
-    void ShowReflection()
-    {
-        EnsureLocked();
-        var levels = Enum.GetValues<AmbitionLevel>();
-        _lock.UpdatePrimaryContent(OptionStep.Create(
-            "War das Ziel zu groß oder zu klein?",
-            detail: null,
-            levels.Select(AmbitionLevelLabels.ToDisplay).ToArray(),
-            start: (int)AmbitionLevel.AboutRight,
-            index =>
-            {
-                var level = levels[index];
-                _log.LogReflection(_session.Snapshot, level);
-                _session.SubmitReflection(level, distracted: false);
-                if (_session.Phase == SessionPhase.OnBreak)
-                    _log.LogBreakStarted(_session.Snapshot);
-                PersistState();
-                RenderPhase();
-            }));
-    }
-
-    void ShowExtension()
-    {
-        EnsureLocked();
-        _lock.UpdatePrimaryContent(DurationStep.Create(duration =>
-        {
-            _session.SubmitExtension(duration);
-            _log.LogExtension(_session.Snapshot);
-            PersistState();
-            _lock.FadeOutThen(Unlock);
-        }, "Wie viel Zeit brauchst du noch?"));
-    }
-
-    void EnsureLocked()
-    {
-        if (_lock.IsLocked)
-            return;
-        _lock.ShowLock(SpinnerView.Create());
-        _ = Task.Run(DisableInternet);
+        if (!_lock.IsLocked)
+            _lock.ShowLock(SpinnerView.Create());
     }
 }

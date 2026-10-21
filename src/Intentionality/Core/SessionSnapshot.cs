@@ -9,9 +9,12 @@ public sealed class SessionSnapshot
     public TimeSpan? RequestedDuration { get; set; }
     public DateTimeOffset? DeadlineUtc { get; set; }
     public DateTimeOffset? BreakEndsAtUtc { get; set; }
+    public TimeSpan? ActiveBreakDuration { get; set; }
+    public SessionPhase? PhaseAfterBreak { get; set; }
+    public bool ExpiredByTimer { get; set; }
+    public bool PendingIncompleteFailureBreak { get; set; }
     public LocationInfo? Location { get; set; }
     public AmbitionLevel? LastAmbitionLevel { get; set; }
-    public bool? LastDistracted { get; set; }
     public bool? LastCompleted { get; set; }
 
     public SessionSnapshot Clone() => new()
@@ -23,9 +26,12 @@ public sealed class SessionSnapshot
         RequestedDuration = RequestedDuration,
         DeadlineUtc = DeadlineUtc,
         BreakEndsAtUtc = BreakEndsAtUtc,
+        ActiveBreakDuration = ActiveBreakDuration,
+        PhaseAfterBreak = PhaseAfterBreak,
+        ExpiredByTimer = ExpiredByTimer,
+        PendingIncompleteFailureBreak = PendingIncompleteFailureBreak,
         Location = Location,
         LastAmbitionLevel = LastAmbitionLevel,
-        LastDistracted = LastDistracted,
         LastCompleted = LastCompleted
     };
 }

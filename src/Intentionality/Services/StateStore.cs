@@ -21,16 +21,24 @@ public sealed class StateStore
         _path = path ?? AppPaths.StateFile;
     }
 
+    public string CorruptBackupPath => Path.ChangeExtension(_path, ".corrupt.json");
+
     public void Save(SessionSnapshot snapshot)
     {
         var dir = Path.GetDirectoryName(_path);
         if (!string.IsNullOrEmpty(dir))
             Directory.CreateDirectory(dir);
 
-        var json = JsonSerializer.Serialize(snapshot, Options);
-        File.WriteAllText(_path, json);
+        // Write to a temp file first so a crash mid-write never leaves a half-written state file.
+        var tempPath = _path + ".tmp";
+        File.WriteAllText(tempPath, JsonSerializer.Serialize(snapshot, Options));
+        File.Move(tempPath, _path, overwrite: true);
     }
 
+    /// <summary>
+    /// Returns the last saved snapshot, or null if none exists.
+    /// A corrupt file is moved to <see cref="CorruptBackupPath"/> and reported as <see cref="InvalidDataException"/>.
+    /// </summary>
     public SessionSnapshot? Load()
     {
         if (!File.Exists(_path))
@@ -38,18 +46,13 @@ public sealed class StateStore
 
         try
         {
-            var json = File.ReadAllText(_path);
-            return JsonSerializer.Deserialize<SessionSnapshot>(json, Options);
+            return JsonSerializer.Deserialize<SessionSnapshot>(File.ReadAllText(_path), Options);
         }
-        catch
+        catch (JsonException ex)
         {
-            return null;
+            File.Move(_path, CorruptBackupPath, overwrite: true);
+            throw new InvalidDataException(
+                $"Der gespeicherte Zustand war beschädigt und wurde nach {CorruptBackupPath} verschoben.", ex);
         }
-    }
-
-    public void Clear()
-    {
-        if (File.Exists(_path))
-            File.Delete(_path);
     }
 }
