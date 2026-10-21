@@ -17,7 +17,8 @@ static class ChoiceStep
         IReadOnlyList<string> labels,
         int startSelected,
         IReadOnlyDictionary<Key, int> shortcuts,
-        Action<int> onConfirm)
+        Action<int> onConfirm,
+        string? subline = null)
     {
         var cells = labels.Select(OutlineChoiceCells.Create).ToArray();
         var row = OutlineChoiceCells.Row();
@@ -35,6 +36,8 @@ static class ChoiceStep
 
         var panel = new StackPanel();
         panel.Children.Add(GoalPrompt(lead, goal));
+        if (!string.IsNullOrWhiteSpace(subline))
+            panel.Children.Add(Subline(subline));
         panel.Children.Add(row);
 
         Submit.SetAction(panel, () => onConfirm(selected));
@@ -70,4 +73,14 @@ static class ChoiceStep
         prompt.Inlines.Add(new Run(goal) { FontWeight = FontWeights.Bold });
         return prompt;
     }
+
+    private static TextBlock Subline(string text) => new()
+    {
+        Text = text,
+        FontSize = 16,
+        Foreground = Theme.Accent,
+        TextWrapping = TextWrapping.Wrap,
+        Margin = new Thickness(0, 8, 0, 0),
+        Opacity = 0.85
+    };
 }

@@ -17,6 +17,9 @@ public class MarkdownLogWriterTests
             {
                 WorkingOn = "Thesis outline",
                 Goal = "Finish method section",
+                DoneCriterion = "Method drafted",
+                IfDistraction = "YouTube",
+                ThenResponse = "Close the tab",
                 RequestedDuration = TimeSpan.FromMinutes(45),
                 DeadlineUtc = DateTimeOffset.UtcNow.AddMinutes(45),
                 Location = new LocationInfo
@@ -30,6 +33,7 @@ public class MarkdownLogWriterTests
             };
 
             log.LogSessionStarted(snap);
+            log.LogDistraction(DistractionRules.YouTube, belongsToGoal: false);
             log.LogEndedEarly();
             log.LogGoalCheck(completed: false);
             log.LogReflection(AmbitionLevel.FarTooAmbitious);
@@ -39,20 +43,23 @@ public class MarkdownLogWriterTests
 
             var text = File.ReadAllText(path);
             Assert.Equal(1, CountHeadings(text, 3));
-            Assert.Equal(1, CountHeadings(text, 4));
+            Assert.Equal(2, CountHeadings(text, 4));
             Assert.Contains("— Sitzung", text);
+            Assert.Contains("— Ablenkung", text);
             Assert.Contains("— Verlängert", text);
             Assert.DoesNotContain("— Zielprüfung", text);
             Assert.DoesNotContain("— Zielgröße", text);
             Assert.Contains("Thesis outline", text);
             Assert.Contains("Finish method section", text);
+            Assert.Contains("Fertig, wenn: Method drafted", text);
+            Assert.Contains("Wenn: YouTube / Dann: Close the tab", text);
+            Assert.Contains("YouTube – geschlossen", text);
             Assert.Contains("52.37400", text);
             Assert.Contains("Zeit: 45 Minuten", text);
             Assert.Contains("Erreicht: Nein", text);
             Assert.Contains("Zielgröße: Zu groß", text);
             Assert.Contains("Zusätzliche Zeit: 15 Minuten", text);
             Assert.Contains("Vorzeitig beendet:", text);
-            Assert.DoesNotContain("Abgelenkt", text);
         }
         finally
         {
@@ -108,7 +115,6 @@ public class MarkdownLogWriterTests
             Assert.Contains(MarkdownLogWriter.FormatLocal(secondUntil), text);
             Assert.Contains("Photos", text);
             Assert.Contains("Sort the batch", text);
-            Assert.DoesNotContain("Abgelenkt", text);
 
             var first = text.IndexOf("— Verlängert", StringComparison.Ordinal);
             var second = text.IndexOf("— Verlängert", first + 1, StringComparison.Ordinal);
@@ -120,6 +126,38 @@ public class MarkdownLogWriterTests
             Assert.Contains("Zielgröße: Passend", secondBlock);
             Assert.Contains("Zusätzliche Zeit: 10 Minuten", secondBlock);
             Assert.Contains("Zeit abgelaufen:", secondBlock);
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void LogBreakStarted_IncludesResumeNote()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "intentionality-test-" + Guid.NewGuid() + ".md");
+        try
+        {
+            var log = new MarkdownLogWriter(path);
+            var snap = new SessionSnapshot
+            {
+                WorkingOn = "Code",
+                Goal = "Ship feature",
+                ActiveBreakDuration = TimeSpan.FromMinutes(5),
+                BreakEndsAtUtc = DateTimeOffset.UtcNow.AddMinutes(5)
+            };
+
+            log.LogGoalCheck(completed: true);
+            log.LogResumeNote("Write the release notes");
+            log.LogReflection(AmbitionLevel.AboutRight);
+            log.LogBreakStarted(snap);
+
+            var text = File.ReadAllText(path);
+            Assert.Contains("— Pause", text);
+            Assert.Contains("Nächster Schritt: Write the release notes", text);
+            Assert.Contains("Erreicht: Ja", text);
         }
         finally
         {

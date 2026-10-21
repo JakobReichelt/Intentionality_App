@@ -30,6 +30,8 @@ public sealed class MarkdownLogWriter
             WorkLine(snapshot),
             $"- Zeit: {FormatDuration(snapshot.RequestedDuration)}",
             GoalLine(snapshot),
+            DoneCriterionLine(snapshot),
+            IfThenLine(snapshot),
             UntilLine(snapshot.DeadlineUtc));
     }
 
@@ -51,7 +53,19 @@ public sealed class MarkdownLogWriter
 
     public void LogGoalCheck(bool completed) => _cycle.Completed = completed;
 
+    public void LogResumeNote(string note) => _cycle.ResumeNote = note.Trim();
+
     public void LogReflection(AmbitionLevel level) => _cycle.GoalSize = AmbitionLevelLabels.ToDisplay(level);
+
+    public void LogDistraction(string ruleId, bool belongsToGoal)
+    {
+        var label = DistractionRules.DisplayName(ruleId);
+        var outcome = belongsToGoal ? "erlaubt" : "geschlossen";
+        AppendEvent(
+            CycleHeading,
+            "Ablenkung",
+            $"- Ablenkung {FormatLocal(DateTimeOffset.Now)}: {label} – {outcome}");
+    }
 
     public void LogExtension(SessionSnapshot snapshot)
     {
@@ -62,6 +76,7 @@ public sealed class MarkdownLogWriter
             GoalLine(snapshot),
             CompletedLine(),
             GoalSizeLine(),
+            ResumeNoteLine(),
             _cycle.EndedEarlyAt is { } ended ? $"- Vorzeitig beendet: {FormatLocal(ended)}" : null,
             _cycle.TimeExpiredAt is { } expired ? $"- Zeit abgelaufen: {FormatLocal(expired)}" : null,
             $"- Zusätzliche Zeit: {FormatDuration(snapshot.RequestedDuration)}",
@@ -78,6 +93,7 @@ public sealed class MarkdownLogWriter
             GoalLine(snapshot),
             CompletedLine(),
             GoalSizeLine(),
+            ResumeNoteLine(),
             $"- Dauer: {FormatDuration(snapshot.ActiveBreakDuration ?? SessionController.MandatoryBreak)}",
             UntilLine(snapshot.BreakEndsAtUtc, "Pause bis"));
         ResetCycle();
@@ -119,11 +135,26 @@ public sealed class MarkdownLogWriter
     private string? GoalSizeLine() =>
         _cycle.GoalSize is { } goalSize ? $"- Zielgröße: {goalSize}" : null;
 
+    private string? ResumeNoteLine() =>
+        string.IsNullOrWhiteSpace(_cycle.ResumeNote) ? null : $"- Nächster Schritt: {_cycle.ResumeNote}";
+
     private static string? WorkLine(SessionSnapshot snapshot, string label = "Woran") =>
         string.IsNullOrWhiteSpace(snapshot.WorkingOn) ? null : $"- {label}: {snapshot.WorkingOn}";
 
     private static string? GoalLine(SessionSnapshot snapshot, string label = "Ziel") =>
         string.IsNullOrWhiteSpace(snapshot.Goal) ? null : $"- {label}: {snapshot.Goal}";
+
+    private static string? DoneCriterionLine(SessionSnapshot snapshot) =>
+        string.IsNullOrWhiteSpace(snapshot.DoneCriterion)
+            ? null
+            : $"- Fertig, wenn: {snapshot.DoneCriterion}";
+
+    private static string? IfThenLine(SessionSnapshot snapshot)
+    {
+        if (string.IsNullOrWhiteSpace(snapshot.IfDistraction) || string.IsNullOrWhiteSpace(snapshot.ThenResponse))
+            return null;
+        return $"- Wenn: {snapshot.IfDistraction} / Dann: {snapshot.ThenResponse}";
+    }
 
     private static string? UntilLine(DateTimeOffset? until, string label = "Frei bis") =>
         until is { } value ? $"- {label}: {FormatLocal(value)}" : null;
@@ -133,10 +164,14 @@ public sealed class MarkdownLogWriter
         SessionPhase.AskingWork => "Frage nach der Arbeit",
         SessionPhase.AskingDuration => "Frage nach der Zeit",
         SessionPhase.AskingGoal => "Frage nach dem Ziel",
+        SessionPhase.AskingDoneCriterion => "Frage nach dem Fertig-Kriterium",
+        SessionPhase.AskingIfThen => "Frage nach dem Wenn-Dann-Plan",
         SessionPhase.Unlocked => "Freigeschaltet",
         SessionPhase.AskingCompletion => "Frage, ob das Ziel erreicht ist",
+        SessionPhase.AskingResumeNote => "Frage nach dem nächsten Schritt",
         SessionPhase.AskingReflection => "Frage nach der Zielgröße",
         SessionPhase.AskingExtension => "Frage nach der Verlängerung",
+        SessionPhase.CheckingDistraction => "Frage zur Ablenkung",
         SessionPhase.OnBreak => "Pause",
         _ => phase.ToString()
     };
@@ -190,5 +225,6 @@ public sealed class MarkdownLogWriter
         public DateTimeOffset? TimeExpiredAt { get; set; }
         public bool? Completed { get; set; }
         public string? GoalSize { get; set; }
+        public string? ResumeNote { get; set; }
     }
 }

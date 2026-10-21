@@ -19,10 +19,13 @@ public sealed partial class AppHost : IDisposable
     private readonly MarkdownLogWriter _log = new();
     private readonly LocationService _location = new();
     private readonly LockOverlayService _lock = new();
+    private readonly DistractionGuard _guard = new();
+    private readonly PromptVariants _prompts = new();
     private readonly TrayService _tray;
     private readonly DispatcherTimer _tickTimer;
     private readonly EventWaitHandle _endSessionEvent = new(false, EventResetMode.AutoReset, EndSessionSignal.Name);
     private RegisteredWaitHandle? _endSessionWait;
+    private SessionSnapshot? _previousSnapshot;
     private bool _started;
 
     public AppHost()
@@ -88,7 +91,10 @@ public sealed partial class AppHost : IDisposable
         try
         {
             if (_stateStore.Load() is { } previous)
+            {
+                _previousSnapshot = previous;
                 _log.LogInterrupted(previous);
+            }
         }
         catch (Exception ex) when (ex is InvalidDataException or IOException)
         {
@@ -102,7 +108,8 @@ public sealed partial class AppHost : IDisposable
         _lock.ShowLock(SpinnerView.Create());
 
         var location = await _location.GetLocationAsync();
-        _session.BeginFreshSession(location);
+        _session.BeginFreshSession(location, _previousSnapshot);
+        _previousSnapshot = null;
         RenderPhase();
     }
 
@@ -111,13 +118,32 @@ public sealed partial class AppHost : IDisposable
         var before = _session.Phase;
         if (_session.Tick())
             OnTimerElapsed(before);
+        else if (_session.Phase == SessionPhase.Unlocked)
+            PollDistraction();
 
-        _tray.UpdateRemaining(_session.GetRemaining());
+        UpdateTray();
+    }
+
+    private void PollDistraction()
+    {
+        try
+        {
+            var ruleId = _guard.DetectForeground();
+            if (ruleId is null)
+                return;
+
+            if (_session.ReportDistraction(ruleId))
+                RenderPhase();
+        }
+        catch (Exception ex)
+        {
+            _log.LogError("Ablenkungsprüfung fehlgeschlagen", ex);
+        }
     }
 
     private void OnTimerElapsed(SessionPhase before)
     {
-        if (before == SessionPhase.Unlocked)
+        if (before is SessionPhase.Unlocked or SessionPhase.CheckingDistraction)
             _log.LogTimeExpired();
 
         if (_session.Phase == SessionPhase.AskingWork)
@@ -149,7 +175,10 @@ public sealed partial class AppHost : IDisposable
         WpfApplication.Current.Dispatcher.BeginInvoke(() =>
         {
             AdvanceClock();
-            var mustBeLocked = _session.Phase is SessionPhase.AskingCompletion or SessionPhase.OnBreak;
+            var mustBeLocked = _session.Phase is SessionPhase.AskingCompletion
+                or SessionPhase.AskingResumeNote
+                or SessionPhase.CheckingDistraction
+                or SessionPhase.OnBreak;
             if (mustBeLocked && !_lock.IsLocked)
                 RenderPhase();
         });

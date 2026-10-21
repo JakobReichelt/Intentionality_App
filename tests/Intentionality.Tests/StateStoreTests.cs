@@ -24,6 +24,13 @@ public class StateStoreTests : IDisposable
             Phase = SessionPhase.OnBreak,
             WorkingOn = "Thesis",
             Goal = "Draft intro",
+            DoneCriterion = "Intro paragraph written",
+            IfDistraction = "YouTube",
+            ThenResponse = "Close the tab",
+            ResumeNote = "Open the outline",
+            PreviousResumeNote = "Finish citations",
+            PreviousWorkingOn = "Literature",
+            AllowedDistractions = ["spotify"],
             BreakEndsAtUtc = new DateTimeOffset(2026, 10, 21, 12, 0, 0, TimeSpan.Zero),
             LastAmbitionLevel = AmbitionLevel.AboutRight
         };
@@ -35,6 +42,13 @@ public class StateStoreTests : IDisposable
         Assert.Equal(snapshot.SessionId, loaded!.SessionId);
         Assert.Equal(SessionPhase.OnBreak, loaded.Phase);
         Assert.Equal("Thesis", loaded.WorkingOn);
+        Assert.Equal("Intro paragraph written", loaded.DoneCriterion);
+        Assert.Equal("YouTube", loaded.IfDistraction);
+        Assert.Equal("Close the tab", loaded.ThenResponse);
+        Assert.Equal("Open the outline", loaded.ResumeNote);
+        Assert.Equal("Finish citations", loaded.PreviousResumeNote);
+        Assert.Equal("Literature", loaded.PreviousWorkingOn);
+        Assert.Equal(["spotify"], loaded.AllowedDistractions);
         Assert.Equal(snapshot.BreakEndsAtUtc, loaded.BreakEndsAtUtc);
         Assert.Equal(AmbitionLevel.AboutRight, loaded.LastAmbitionLevel);
         Assert.False(File.Exists(StatePath + ".tmp"));

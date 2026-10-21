@@ -24,11 +24,22 @@ public class SessionControllerTests
         Assert.Equal(SessionPhase.AskingGoal, session.Phase);
 
         session.SubmitGoal("Finish method section");
+        Assert.Equal(SessionPhase.AskingDoneCriterion, session.Phase);
+
+        session.SubmitDoneCriterion("Method section drafted");
         Assert.Equal(SessionPhase.AskingDuration, session.Phase);
 
         session.SubmitDuration(TimeSpan.FromMinutes(45));
+        Assert.Equal(SessionPhase.AskingIfThen, session.Phase);
+        Assert.Equal(TimeSpan.FromMinutes(45), session.Snapshot.RequestedDuration);
+        Assert.Null(session.Snapshot.DeadlineUtc);
+
+        session.SubmitIfThen("YouTube", "Close the tab and stretch");
         Assert.Equal(SessionPhase.Unlocked, session.Phase);
         Assert.Equal(clock.UtcNow.AddMinutes(45), session.Snapshot.DeadlineUtc);
+        Assert.Equal("YouTube", session.Snapshot.IfDistraction);
+        Assert.Equal("Close the tab and stretch", session.Snapshot.ThenResponse);
+        Assert.Equal("Method section drafted", session.Snapshot.DoneCriterion);
     }
 
     [Fact]
@@ -46,11 +57,12 @@ public class SessionControllerTests
         session.BeginFreshSession(null);
         session.SubmitWorkingOn("Work");
         session.SubmitGoal("A goal");
+        session.SubmitDoneCriterion("Done when written");
         Assert.Throws<ArgumentException>(() => session.SubmitDuration(TimeSpan.Zero));
     }
 
     [Fact]
-    public void GoalCompleted_StartsMandatoryBreak_ThenRestarts()
+    public void GoalCompleted_AsksResumeNote_ThenBreak_ThenCarriesNote()
     {
         var clock = new FakeClock();
         var session = new SessionController(clock);
@@ -61,8 +73,12 @@ public class SessionControllerTests
         Assert.Equal(SessionPhase.AskingCompletion, session.Phase);
 
         session.SubmitGoalCompleted(completed: true);
-        Assert.Equal(SessionPhase.AskingReflection, session.Phase);
+        Assert.Equal(SessionPhase.AskingResumeNote, session.Phase);
         Assert.True(session.Snapshot.LastCompleted);
+
+        session.SubmitResumeNote("Open the results table");
+        Assert.Equal(SessionPhase.AskingReflection, session.Phase);
+        Assert.Equal("Open the results table", session.Snapshot.ResumeNote);
 
         session.SubmitReflection(AmbitionLevel.AboutRight);
         Assert.Equal(SessionPhase.OnBreak, session.Phase);
@@ -73,10 +89,27 @@ public class SessionControllerTests
         Assert.Equal(SessionPhase.AskingWork, session.Phase);
         Assert.Null(session.Snapshot.WorkingOn);
         Assert.Null(session.Snapshot.Goal);
+        Assert.Equal("Open the results table", session.Snapshot.PreviousResumeNote);
+        Assert.Equal("Thesis", session.Snapshot.PreviousWorkingOn);
     }
 
     [Fact]
-    public void GoalNotCompleted_ReflectionThenExtension()
+    public void BeginFreshSession_CarriesResumeFromPreviousSnapshot()
+    {
+        var previous = new SessionSnapshot
+        {
+            WorkingOn = "Old work",
+            ResumeNote = "Start with the intro"
+        };
+        var session = new SessionController();
+        session.BeginFreshSession(null, previous);
+
+        Assert.Equal("Start with the intro", session.Snapshot.PreviousResumeNote);
+        Assert.Equal("Old work", session.Snapshot.PreviousWorkingOn);
+    }
+
+    [Fact]
+    public void GoalNotCompleted_SkipsResumeNote_ReflectionThenExtension()
     {
         var clock = new FakeClock();
         var session = new SessionController(clock);
@@ -105,6 +138,22 @@ public class SessionControllerTests
     }
 
     [Fact]
+    public void Extension_SkipsIfThenStep()
+    {
+        var clock = new FakeClock();
+        var session = new SessionController(clock);
+        StartUnlocked(session, clock);
+
+        session.EndSessionForFeedback();
+        session.SubmitGoalCompleted(completed: false);
+        session.SubmitReflection(AmbitionLevel.AboutRight);
+        Assert.Equal(SessionPhase.AskingExtension, session.Phase);
+
+        session.SubmitExtension(TimeSpan.FromMinutes(10));
+        Assert.Equal(SessionPhase.Unlocked, session.Phase);
+    }
+
+    [Fact]
     public void GoalNotCompleted_ShortTimedBlock_SkipsFailureBreak()
     {
         var clock = new FakeClock();
@@ -112,7 +161,9 @@ public class SessionControllerTests
         session.BeginFreshSession(null);
         session.SubmitWorkingOn("Thesis");
         session.SubmitGoal("Small task");
+        session.SubmitDoneCriterion("Task done");
         session.SubmitDuration(TimeSpan.FromMinutes(10));
+        session.SubmitIfThen("Reddit", "Close tab");
 
         clock.UtcNow = clock.UtcNow.AddMinutes(10);
         session.Tick();
@@ -131,7 +182,9 @@ public class SessionControllerTests
         session.BeginFreshSession(null);
         session.SubmitWorkingOn("Thesis");
         session.SubmitGoal("Chapter");
+        session.SubmitDoneCriterion("Chapter drafted");
         session.SubmitDuration(TimeSpan.FromMinutes(15));
+        session.SubmitIfThen("Spotify", "Pause music");
 
         clock.UtcNow = clock.UtcNow.AddMinutes(15);
         session.Tick();
@@ -161,15 +214,65 @@ public class SessionControllerTests
     [Fact]
     public void EndSessionEarly_GoesToGoalCheck()
     {
-        var session = new SessionController();
-        session.BeginFreshSession(null);
-        session.SubmitWorkingOn("Thesis");
-        session.SubmitGoal("Draft the intro");
-        session.SubmitDuration(TimeSpan.FromMinutes(30));
+        var clock = new FakeClock();
+        var session = new SessionController(clock);
+        StartUnlocked(session, clock);
 
         session.EndSessionForFeedback();
         Assert.Equal(SessionPhase.AskingCompletion, session.Phase);
         Assert.Null(session.Snapshot.DeadlineUtc);
+    }
+
+    [Fact]
+    public void ReportDistraction_Prompts_AndAllowRemembers()
+    {
+        var clock = new FakeClock();
+        var session = new SessionController(clock);
+        StartUnlocked(session, clock);
+
+        Assert.True(session.ReportDistraction(DistractionRules.YouTube));
+        Assert.Equal(SessionPhase.CheckingDistraction, session.Phase);
+        Assert.Equal(DistractionRules.YouTube, session.Snapshot.PendingDistraction);
+
+        session.ResolveDistraction(belongsToGoal: true);
+        Assert.Equal(SessionPhase.Unlocked, session.Phase);
+        Assert.Contains(DistractionRules.YouTube, session.Snapshot.AllowedDistractions);
+        Assert.Null(session.Snapshot.PendingDistraction);
+
+        Assert.False(session.ReportDistraction(DistractionRules.YouTube));
+        Assert.Equal(SessionPhase.Unlocked, session.Phase);
+    }
+
+    [Fact]
+    public void ReportDistraction_Reject_ReturnsToUnlockedWithoutAllowing()
+    {
+        var clock = new FakeClock();
+        var session = new SessionController(clock);
+        StartUnlocked(session, clock);
+
+        session.ReportDistraction(DistractionRules.Reddit);
+        session.ResolveDistraction(belongsToGoal: false);
+
+        Assert.Equal(SessionPhase.Unlocked, session.Phase);
+        Assert.Empty(session.Snapshot.AllowedDistractions);
+        Assert.True(session.ReportDistraction(DistractionRules.Reddit));
+    }
+
+    [Fact]
+    public void Tick_DuringDistractionCheck_ExpiresToCompletion()
+    {
+        var clock = new FakeClock();
+        var session = new SessionController(clock);
+        StartUnlocked(session, clock);
+
+        session.ReportDistraction(DistractionRules.Spotify);
+        Assert.Equal(SessionPhase.CheckingDistraction, session.Phase);
+
+        clock.UtcNow = clock.UtcNow.AddMinutes(45);
+        Assert.True(session.Tick());
+        Assert.Equal(SessionPhase.AskingCompletion, session.Phase);
+        Assert.Null(session.Snapshot.PendingDistraction);
+        Assert.True(session.Snapshot.ExpiredByTimer);
     }
 
     [Fact]
@@ -203,7 +306,9 @@ public class SessionControllerTests
         session.BeginFreshSession(null);
         session.SubmitWorkingOn("Thesis");
         session.SubmitGoal("Finish method section");
+        session.SubmitDoneCriterion("Method section drafted");
         session.SubmitDuration(TimeSpan.FromMinutes(45));
+        session.SubmitIfThen("YouTube", "Close the tab");
         Assert.Equal(SessionPhase.Unlocked, session.Phase);
         Assert.Equal(clock.UtcNow.AddMinutes(45), session.Snapshot.DeadlineUtc);
     }

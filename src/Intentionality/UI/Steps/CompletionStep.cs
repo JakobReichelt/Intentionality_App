@@ -11,6 +11,15 @@ static class CompletionStep
     static readonly string[] Labels = ["Ja", "Nein"];
     static readonly Dictionary<Key, int> Shortcuts = new() { [Key.J] = Yes, [Key.L] = No };
 
-    public static UIElement Create(string goal, Action<bool> onConfirm) =>
-        ChoiceStep.Create("Fertig mit: ", goal, Labels, startSelected: No, Shortcuts, index => onConfirm(index == Yes));
+    public static UIElement Create(
+        string lead,
+        string goal,
+        Action<bool> onConfirm,
+        string? doneCriterion = null)
+    {
+        var subline = string.IsNullOrWhiteSpace(doneCriterion)
+            ? null
+            : $"Fertig, wenn: {doneCriterion}";
+        return ChoiceStep.Create(lead, goal, Labels, startSelected: No, Shortcuts, index => onConfirm(index == Yes), subline);
+    }
 }

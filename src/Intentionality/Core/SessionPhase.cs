@@ -9,5 +9,10 @@ public enum SessionPhase
     AskingCompletion,
     AskingReflection,
     AskingExtension,
-    OnBreak
+    OnBreak,
+    // Appended for JSON string-enum compatibility with older state files.
+    AskingDoneCriterion,
+    AskingIfThen,
+    AskingResumeNote,
+    CheckingDistraction
 }

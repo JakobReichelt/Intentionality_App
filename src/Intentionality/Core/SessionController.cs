@@ -20,9 +20,9 @@ public sealed class SessionController
 
     public event Action? StateChanged;
 
-    public void BeginFreshSession(LocationInfo? location)
+    public void BeginFreshSession(LocationInfo? location, SessionSnapshot? previous = null)
     {
-        _state = NewSession(location);
+        _state = NewSession(location, previous);
         RaiseChanged();
     }
 
@@ -44,6 +44,14 @@ public sealed class SessionController
     {
         EnsurePhase(SessionPhase.AskingGoal);
         _state.Goal = RequireText(goal, "Sitzungsziel");
+        _state.Phase = SessionPhase.AskingDoneCriterion;
+        RaiseChanged();
+    }
+
+    public void SubmitDoneCriterion(string text)
+    {
+        EnsurePhase(SessionPhase.AskingDoneCriterion);
+        _state.DoneCriterion = RequireText(text, "Fertig-Kriterium");
         _state.Phase = SessionPhase.AskingDuration;
         RaiseChanged();
     }
@@ -51,7 +59,19 @@ public sealed class SessionController
     public void SubmitDuration(TimeSpan duration)
     {
         EnsurePhase(SessionPhase.AskingDuration);
-        StartTimer(duration);
+        RequireDuration(duration);
+        _state.RequestedDuration = duration;
+        _state.Phase = SessionPhase.AskingIfThen;
+        RaiseChanged();
+    }
+
+    public void SubmitIfThen(string distraction, string response)
+    {
+        EnsurePhase(SessionPhase.AskingIfThen);
+        _state.IfDistraction = RequireText(distraction, "Ablenkung");
+        _state.ThenResponse = RequireText(response, "Reaktion");
+        StartTimer(_state.RequestedDuration
+            ?? throw new InvalidOperationException("Keine Dauer gesetzt."));
         RaiseChanged();
     }
 
@@ -60,15 +80,26 @@ public sealed class SessionController
         EnsurePhase(SessionPhase.AskingCompletion);
         _state.LastCompleted = completed;
         _state.PendingIncompleteFailureBreak = !completed && RequiresIncompleteFailureBreak(_state);
+        _state.Phase = completed ? SessionPhase.AskingResumeNote : SessionPhase.AskingReflection;
+        RaiseChanged();
+    }
+
+    public void SubmitResumeNote(string text)
+    {
+        EnsurePhase(SessionPhase.AskingResumeNote);
+        _state.ResumeNote = RequireText(text, "Nächster Schritt");
         _state.Phase = SessionPhase.AskingReflection;
         RaiseChanged();
     }
 
     public void EndSessionForFeedback()
     {
-        EnsurePhase(SessionPhase.Unlocked);
+        if (_state.Phase is not (SessionPhase.Unlocked or SessionPhase.CheckingDistraction))
+            throw new InvalidOperationException($"Expected phase Unlocked or CheckingDistraction, but was {_state.Phase}.");
+
         _state.DeadlineUtc = null;
         _state.ExpiredByTimer = false;
+        _state.PendingDistraction = null;
         _state.Phase = SessionPhase.AskingCompletion;
         RaiseChanged();
     }
@@ -102,15 +133,47 @@ public sealed class SessionController
         RaiseChanged();
     }
 
+    public bool ReportDistraction(string ruleId)
+    {
+        if (_state.Phase != SessionPhase.Unlocked)
+            return false;
+        if (string.IsNullOrWhiteSpace(ruleId))
+            return false;
+        if (_state.AllowedDistractions.Contains(ruleId, StringComparer.OrdinalIgnoreCase))
+            return false;
+
+        _state.PendingDistraction = ruleId;
+        _state.Phase = SessionPhase.CheckingDistraction;
+        RaiseChanged();
+        return true;
+    }
+
+    public void ResolveDistraction(bool belongsToGoal)
+    {
+        EnsurePhase(SessionPhase.CheckingDistraction);
+        var ruleId = _state.PendingDistraction;
+        if (belongsToGoal && !string.IsNullOrWhiteSpace(ruleId)
+            && !_state.AllowedDistractions.Contains(ruleId, StringComparer.OrdinalIgnoreCase))
+        {
+            _state.AllowedDistractions.Add(ruleId);
+        }
+
+        _state.PendingDistraction = null;
+        _state.Phase = SessionPhase.Unlocked;
+        RaiseChanged();
+    }
+
     /// <summary>
     /// Advances timers. Returns true if a phase transition occurred.
     /// </summary>
     public bool Tick()
     {
         var now = _clock.UtcNow;
-        if (_state.Phase == SessionPhase.Unlocked && _state.DeadlineUtc is { } deadline && now >= deadline)
+        if ((_state.Phase is SessionPhase.Unlocked or SessionPhase.CheckingDistraction)
+            && _state.DeadlineUtc is { } deadline && now >= deadline)
         {
             _state.ExpiredByTimer = true;
+            _state.PendingDistraction = null;
             _state.Phase = SessionPhase.AskingCompletion;
         }
         else if (_state.Phase == SessionPhase.OnBreak && _state.BreakEndsAtUtc is { } breakEnd && now >= breakEnd)
@@ -130,7 +193,7 @@ public sealed class SessionController
     {
         DateTimeOffset? end = _state.Phase switch
         {
-            SessionPhase.Unlocked => _state.DeadlineUtc,
+            SessionPhase.Unlocked or SessionPhase.CheckingDistraction => _state.DeadlineUtc,
             SessionPhase.OnBreak => _state.BreakEndsAtUtc,
             _ => null
         };
@@ -147,11 +210,13 @@ public sealed class SessionController
         && state.RequestedDuration is TimeSpan duration
         && duration >= LongSessionThreshold;
 
-    private static SessionSnapshot NewSession(LocationInfo? location) => new()
+    private static SessionSnapshot NewSession(LocationInfo? location, SessionSnapshot? previous) => new()
     {
         SessionId = Guid.NewGuid(),
         Phase = SessionPhase.AskingWork,
-        Location = location
+        Location = location,
+        PreviousResumeNote = previous?.ResumeNote,
+        PreviousWorkingOn = previous?.WorkingOn
     };
 
     private void StartTimer(TimeSpan duration)
@@ -159,6 +224,7 @@ public sealed class SessionController
         RequireDuration(duration);
         _state.RequestedDuration = duration;
         _state.DeadlineUtc = _clock.UtcNow.Add(duration);
+        _state.PendingDistraction = null;
         _state.Phase = SessionPhase.Unlocked;
     }
 
@@ -168,6 +234,7 @@ public sealed class SessionController
         _state.ActiveBreakDuration = duration;
         _state.PhaseAfterBreak = phaseAfterBreak;
         _state.DeadlineUtc = null;
+        _state.PendingDistraction = null;
         _state.Phase = SessionPhase.OnBreak;
     }
 
@@ -175,7 +242,7 @@ public sealed class SessionController
     {
         if (_state.PhaseAfterBreak != SessionPhase.AskingExtension)
         {
-            _state = NewSession(_state.Location);
+            _state = NewSession(_state.Location, _state);
             return;
         }
 

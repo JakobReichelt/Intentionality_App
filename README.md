@@ -42,11 +42,13 @@ Session answers and errors are appended to [`logs/intentionality.md`](logs/inten
 ## Flow
 
 1. Lock screens and sample location  
-2. Ask: what you are working on → session goal → how much time  
-3. Unlock and wait (tray countdown)  
-4. When time is up: lock again and ask if the goal was completed  
-   - **Yes** → mandatory 5-minute break → start over  
-   - **No** → ambition scale → if the timer ran out on a block of 15 minutes or more, mandatory 2-minute break → new time → unlock again (shorter blocks or early end skip the break)  
+2. Ask: what you are working on (shows last resume note if any) → session goal → done criterion → how much time → if-then plan for distractions  
+3. Unlock and wait (tray shows remaining time + goal; icon shows remaining minutes)  
+4. During the session: if YouTube, Reddit (browser) or Spotify comes to the foreground, ask whether it belongs to the goal — **Yes** allows it for the rest of the session, **No** closes the tab/app  
+5. When time is up: lock again and ask if the goal was completed  
+   - **Yes** → resume note for next time → ambition scale → mandatory 5-minute break → start over  
+   - **No** → ambition scale → if the timer ran out on a block of 15 minutes or more, mandatory 2-minute break → new time → unlock again (shorter blocks or early end skip the break; no second if-then)  
+
 
 ## Code layout
 
